@@ -13,6 +13,7 @@ choice, see below).
 ./collect.py --only claude_code      # run a single source (claude_code|codex)
 ./collect.py --no-dashboard          # collect without rebuilding dashboard.html
 ./collect.py --open                  # ...and open dashboard.html afterward
+./collect.py --serve                 # serve on localhost, re-collecting on every dashboard refresh
 ./setup.sh                           # one-time: .env, ~/.zshrc aliases, optional launchd install
 ```
 
@@ -74,14 +75,32 @@ in this tool is a computed estimate, since neither subscription is billed per to
 ### Dashboard (`aiusage/dashboard.py`)
 
 Aggregates `usage_event` in SQL, prices it, then serializes one JSON payload
-(`DATA = {...}`) directly into `dashboard.html` — no server, no build step, no
-network at view time. Model series beyond `MAX_MODEL_SERIES` (8) fold into "Other";
-provider→color slot is fixed (`PROVIDER_SLOT`) so adding a third provider never
-repaints the first two.
+(`build_payload()`) directly into `dashboard.html` as `DATA = {...}` — no build
+step, no network needed to view it. Model series beyond `MAX_MODEL_SERIES` (8)
+fold into "Other"; provider→color slot is fixed (`PROVIDER_SLOT`) so adding a
+third provider never repaints the first two.
+
+The page always ships a Refresh button and a `setInterval` auto-refresh
+(`__REFRESH_MS__`, default 60s). Both call the same JS function, which tries
+`fetch('/api/data')` first and falls back to `location.reload()` if that
+fails — so the identical `dashboard.html` behaves correctly whether it's a
+plain file (fetch fails, fallback reloads whatever's on disk) or served by
+`aiusage/server.py` (fetch succeeds and re-renders in place).
+
+### Live serving (`aiusage/server.py`, `collect.py --serve`)
+
+Optional, off by default. A stdlib `ThreadingHTTPServer` serves the
+already-built `dashboard.html` at `/` and, on every `GET /api/data`, re-runs
+`collect.run_sources()` and returns a fresh `dashboard.build_payload()` as
+JSON. Requests run one per thread, so the shared `sqlite3.Connection` is
+opened with `check_same_thread=False` and every access — collection and the
+payload query alike — is serialized behind one `threading.Lock` in
+`server.py`. This is the only path in the codebase where the DB connection is
+touched from more than one thread.
 
 ### Adding a new source
 
 Follow the shape in `aiusage/sources/`: a `run(conn, ...) -> dict` entry point
 returning a stats dict for the run log, rows built with the exact `usage_event`
 column set (`db.USAGE_COLUMNS`), and a stable, collision-proof `id`. Wire it into
-`collect.py`'s `stage(...)` calls next to the existing two.
+`collect.py`'s `run_sources()`, in the `stage(...)` calls next to the existing two.

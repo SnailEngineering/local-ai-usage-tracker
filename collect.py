@@ -25,6 +25,7 @@ from aiusage import db  # noqa: E402
 from aiusage.sources import claude_code_local, codex_local  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
+DEFAULT_PORT = 8787
 
 
 def load_env(path: Path) -> None:
@@ -47,35 +48,17 @@ def _expand(value: str) -> Path:
     return Path(os.path.expanduser(value)).resolve()
 
 
-def main() -> int:
-    load_env(ROOT / ".env")
-
-    ap = argparse.ArgumentParser(description="Collect AI usage from all configured sources.")
-    ap.add_argument("--no-dashboard", action="store_true", help="skip regenerating dashboard.html")
-    ap.add_argument("--status", action="store_true", help="print a summary and exit")
-    ap.add_argument("--open", dest="open_after", action="store_true",
-                    help="open the dashboard in your browser when done")
-    ap.add_argument("--only", choices=["claude_code", "codex"],
-                    help="run a single source")
-    args = ap.parse_args()
-
-    db_path = _expand(os.environ.get("AIU_DB", str(ROOT / "data" / "usage.db")))
-    archive_dir = _expand(os.environ.get("AIU_ARCHIVE", str(ROOT / "data" / "archive")))
-    claude_dir = _expand(os.environ.get("AIU_CLAUDE_DIR", "~/.claude"))
-    codex_dir = _expand(os.environ.get("AIU_CODEX_DIR", "~/.codex"))
-    out_html = _expand(os.environ.get("AIU_DASHBOARD", str(ROOT / "dashboard.html")))
-
-    conn = db.connect(db_path)
-
-    if args.status:
-        return print_status(conn, db_path)
-
+def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
+                 only: str | None = None, quiet: bool = False) -> int:
+    """Run every enabled source once, logging each to run_log. Returns the
+    number of failures; one source raising never stops the other."""
     failures = 0
 
     def stage(name: str, enabled: bool, fn, skip_reason: str = ""):
         nonlocal failures
         if not enabled:
-            print(f"  {name:<22} skipped ({skip_reason})")
+            if not quiet:
+                print(f"  {name:<22} skipped ({skip_reason})")
             db.log_run(conn, name, "skipped", skip_reason,
                        datetime.now(timezone.utc).isoformat(),
                        datetime.now(timezone.utc).isoformat())
@@ -86,7 +69,8 @@ def main() -> int:
             stats = fn()
             conn.commit()
             detail = " ".join(f"{k}={v}" for k, v in stats.items())
-            print(f"  {name:<22} ok       {detail}")
+            if not quiet:
+                print(f"  {name:<22} ok       {detail}")
             db.log_run(conn, name, "ok", detail, started,
                        datetime.now(timezone.utc).isoformat())
         except Exception as e:  # keep other sources running
@@ -97,10 +81,6 @@ def main() -> int:
                        datetime.now(timezone.utc).isoformat())
         conn.commit()
 
-    only = args.only
-
-    print(f"local-ai-usage-tracker  db={db_path}")
-
     stage("claude_code_local", only in (None, "claude_code"),
           lambda: claude_code_local.run(conn, claude_dir, archive_dir),
           "--only excluded it")
@@ -109,12 +89,71 @@ def main() -> int:
           lambda: codex_local.run(conn, codex_dir, archive_dir.parent / "archive-codex"),
           "--only excluded it")
 
-    if not args.no_dashboard:
-        from aiusage import dashboard
-        dashboard.build(conn, out_html)
+    return failures
+
+
+def main() -> int:
+    load_env(ROOT / ".env")
+
+    ap = argparse.ArgumentParser(description="Collect AI usage from all configured sources.")
+    ap.add_argument("--no-dashboard", action="store_true", help="skip regenerating dashboard.html")
+    ap.add_argument("--status", action="store_true", help="print a summary and exit")
+    ap.add_argument("--open", dest="open_after", action="store_true",
+                    help="open the dashboard in your browser when done")
+    ap.add_argument("--only", choices=["claude_code", "codex"],
+                    help="run a single source")
+    ap.add_argument("--serve", action="store_true",
+                    help="collect once, then serve the dashboard on localhost and "
+                         "re-collect on every page refresh instead of exiting")
+    ap.add_argument("--port", type=int, default=DEFAULT_PORT,
+                    help=f"port for --serve (default {DEFAULT_PORT})")
+    ap.add_argument("--interval", type=int, default=60,
+                    help="seconds between auto-refreshes while the dashboard tab "
+                         "is left open (default 60)")
+    args = ap.parse_args()
+
+    db_path = _expand(os.environ.get("AIU_DB", str(ROOT / "data" / "usage.db")))
+    archive_dir = _expand(os.environ.get("AIU_ARCHIVE", str(ROOT / "data" / "archive")))
+    claude_dir = _expand(os.environ.get("AIU_CLAUDE_DIR", "~/.claude"))
+    codex_dir = _expand(os.environ.get("AIU_CODEX_DIR", "~/.codex"))
+    out_html = _expand(os.environ.get("AIU_DASHBOARD", str(ROOT / "dashboard.html")))
+
+    # --serve hands the connection to a ThreadingHTTPServer, where each
+    # request runs on its own thread; server.py serializes every access with
+    # a lock, so disabling sqlite's same-thread check here is safe.
+    conn = db.connect(db_path, check_same_thread=not args.serve)
+
+    if args.status:
+        return print_status(conn, db_path)
+
+    print(f"local-ai-usage-tracker  db={db_path}")
+    failures = run_sources(conn, claude_dir, codex_dir, archive_dir, args.only)
+
+    from aiusage import dashboard
+    if not args.no_dashboard or args.serve:
+        dashboard.build(conn, out_html, refresh_seconds=args.interval)
         print(f"  dashboard              ok       {out_html}")
-        if args.open_after:
-            subprocess.run(["open", str(out_html)], check=False)
+
+    if args.serve:
+        from aiusage import server
+        collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
+                                          args.only, quiet=True)
+        httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port)
+        url = f"http://127.0.0.1:{args.port}/"
+        print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "
+              f"request to /api/data)")
+        subprocess.run(["open", url], check=False)
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            httpd.server_close()
+            conn.close()
+        return 0
+
+    if args.open_after:
+        subprocess.run(["open", str(out_html)], check=False)
 
     conn.commit()
     conn.close()

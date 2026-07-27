@@ -1,8 +1,10 @@
 """Static dashboard generator.
 
 Queries the database, prices tokens at render time, and writes one
-self-contained HTML file. No server, no build step, no network at view time --
-open it from a bookmark.
+self-contained HTML file. No build step, no network at view time -- open it
+from a bookmark. `collect.py --serve` (see aiusage/server.py) is optional and
+only adds a /api/data endpoint the page can poll for fresh data; the default
+workflow stays a plain file on disk.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ def _agg(conn: sqlite3.Connection) -> list[dict]:
     return rows
 
 
-def _build_payload(conn: sqlite3.Connection) -> dict:
+def build_payload(conn: sqlite3.Connection) -> dict:
     rows = _agg(conn)
 
     # Rank models by lifetime tokens so the busiest get the leading hues. The
@@ -178,10 +180,12 @@ def _build_payload(conn: sqlite3.Connection) -> dict:
     }
 
 
-def build(conn: sqlite3.Connection, out_path: Path) -> Path:
-    payload = _build_payload(conn)
+def build(conn: sqlite3.Connection, out_path: Path, refresh_seconds: int = 60) -> Path:
+    payload = build_payload(conn)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    html = TEMPLATE.replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+    html = (TEMPLATE
+            .replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+            .replace("__REFRESH_MS__", str(refresh_seconds * 1000)))
     out_path.write_text(html, encoding="utf-8")
     return out_path
 
@@ -230,6 +234,13 @@ TEMPLATE = r"""<!doctype html>
   header { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px 20px; margin-bottom:28px; }
   h1 { font-size:22px; font-weight:640; margin:0; letter-spacing:-0.01em; }
   .stamp { color:var(--muted); font-size:13px; margin-left:auto; }
+  .btn {
+    appearance:none; border:1px solid var(--border); background:var(--surface);
+    color:var(--ink); font:inherit; font-size:12.5px; font-weight:560;
+    padding:6px 12px; border-radius:8px; cursor:pointer;
+  }
+  .btn:hover { border-color:var(--axis); }
+  .btn:disabled { opacity:.6; cursor:default; }
   h2 { font-size:15px; font-weight:620; margin:0 0 2px; }
   .sub { color:var(--muted); font-size:13px; margin:0 0 16px; }
 
@@ -297,6 +308,7 @@ TEMPLATE = r"""<!doctype html>
 <div class="wrap">
   <header>
     <h1>AI Usage</h1>
+    <button class="btn" id="refresh-btn" type="button">Refresh</button>
     <span class="stamp" id="stamp"></span>
   </header>
   <div id="app"></div>
@@ -540,6 +552,32 @@ function render() {
 render();
 let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(render, 180); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+
+/* `collect.py --serve` exposes /api/data, which re-runs the collectors and
+   returns fresh JSON, so a poll or click re-renders in place with no reload.
+   Opened as a plain file:// page there's no server to fetch from -- the only
+   way to pick up newer data is a full reload of whatever the last
+   ./collect.py run (or the launchd schedule) wrote to disk, so that's the
+   fallback. */
+async function refreshData() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
+  try {
+    const res = await fetch('/api/data', { cache: 'no-store' });
+    if (!res.ok) throw new Error('bad response');
+    Object.assign(DATA, await res.json());
+    render();
+  } catch (err) {
+    location.reload();
+    return;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+  }
+}
+
+document.getElementById('refresh-btn').addEventListener('click', refreshData);
+const REFRESH_MS = __REFRESH_MS__;
+if (REFRESH_MS > 0) setInterval(refreshData, REFRESH_MS);
 </script>
 </body>
 </html>

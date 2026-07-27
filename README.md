@@ -1,9 +1,10 @@
 # local-ai-usage-tracker
 
 A permanent, local history of Claude Code and ChatGPT (Codex) usage, with a
-dashboard of theoretical cost. Stdlib Python + SQLite, no dependencies, no
-server. Runs from launchd once or twice a day and writes a single
-self-contained `dashboard.html`.
+dashboard of theoretical cost. Stdlib Python + SQLite, no dependencies. Runs
+from launchd once or twice a day and writes a single self-contained
+`dashboard.html`; an optional local server (`./collect.py --serve`) lets that
+page refresh itself live instead.
 
 ```
 launchd (2x/day)
@@ -53,6 +54,21 @@ aiusage-dashboard         # open dashboard.html
 Prefer to do it by hand instead? `./collect.py` collects and builds the
 dashboard; `./collect.py --status` prints what's in the database and the last
 few runs.
+
+### Live updates while the tab is open
+
+`dashboard.html` always has a Refresh button and auto-refreshes on an
+interval (60s by default). What that does depends on how you opened it:
+
+- **Plain file** (double-click, or `aiusage-dashboard`): refresh reloads
+  whatever's currently on disk — useful after a manual `./collect.py` run, or
+  just to pick up the next launchd run without reopening the tab.
+- **`./collect.py --serve`**: starts a small local server at
+  `http://127.0.0.1:8787/` and opens it. Every refresh (auto or click)
+  re-runs both collectors and re-renders the charts in place — no full page
+  reload, no need to leave a separate terminal running `./collect.py`
+  yourself. `Ctrl+C` stops it; `--port` and `--interval` (seconds) override
+  the defaults.
 
 ### Schedule it
 
