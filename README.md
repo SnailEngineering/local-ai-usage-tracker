@@ -118,7 +118,7 @@ is why it exists. It is not a downgrade: it is *more* granular than the API
 
 **Tokens are stored; dollars are computed at render time.** A pricing change
 re-prices all history instead of freezing bad numbers into rows. Rates live in
-`aiusage/pricing.py`:
+`aiusage/pricing.py`, one list-price table per provider:
 
 - cache write, 5-minute TTL → 1.25× input rate
 - cache write, 1-hour TTL → 2.00× input rate
@@ -127,13 +127,14 @@ re-prices all history instead of freezing bad numbers into rows. Rates live in
 A model with no rate on file is counted in tokens and **excluded from cost**,
 never silently priced at zero; the dashboard says so.
 
-OpenAI is deliberately absent from that table — its Costs endpoint reports real
-billed dollars, so those are stored verbatim rather than re-derived from a price
-list that would drift.
+`openai_admin`'s Costs endpoint is the one exception: it reports real billed
+dollars for admin-key holders, so those go into `provider_cost` verbatim
+instead of being re-derived from the rate table.
 
 > **These dollars are notional if you are on a subscription.** They are token
 > counts × list API prices — the right measure of *what you consumed*, but not
-> an invoice. Don't reconcile them against a card statement.
+> an invoice. ChatGPT Plus and Claude Pro/Max don't bill per token at all.
+> Don't reconcile these numbers against a card statement.
 
 ## Verification
 

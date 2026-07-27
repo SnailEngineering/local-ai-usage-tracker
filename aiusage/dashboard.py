@@ -111,7 +111,7 @@ def _build_payload(conn: sqlite3.Connection) -> dict:
     # Per-project spend (Claude Code local ingest is the only source with a cwd).
     proj: dict[str, dict] = {}
     for r in conn.execute("""
-        SELECT COALESCE(project,'(unknown)') AS project, model,
+        SELECT COALESCE(project,'(unknown)') AS project, provider, model,
                SUM(input_tokens) input_tokens, SUM(output_tokens) output_tokens,
                SUM(cache_write_5m_tokens) cache_write_5m_tokens,
                SUM(cache_write_1h_tokens) cache_write_1h_tokens,
@@ -119,7 +119,7 @@ def _build_payload(conn: sqlite3.Connection) -> dict:
                SUM(reported_cost_usd) reported_cost_usd,
                MAX(day) last_day, COUNT(*) n
         FROM usage_event WHERE project IS NOT NULL
-        GROUP BY project, model
+        GROUP BY project, provider, model
     """):
         d = dict(r)
         d["day"] = d["last_day"]

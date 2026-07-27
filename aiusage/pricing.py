@@ -1,15 +1,18 @@
 """Token -> USD conversion, applied at render time.
 
-Anthropic list prices, USD per million tokens (verified 2026-07-27). Cache
-multipliers are relative to the model's base input rate:
+List prices, USD per million tokens (verified 2026-07-27), one table per
+provider. Cache multipliers are relative to the model's base input rate:
 
     5-minute cache write : 1.25x input
     1-hour cache write   : 2.00x input
     cache read           : 0.10x input
 
-OpenAI is deliberately absent. Its Costs endpoint reports real billed dollars,
-so we store those verbatim rather than re-deriving them from a price table we
-would have to keep in sync.
+These are notional API list prices, not real invoices. They price the local
+sources (`claude_code_local`, `codex_local`), which cover subscription usage
+that no API ever bills per token, and any admin-API usage row that doesn't
+already carry a `reported_cost_usd`. OpenAI's Costs endpoint separately
+reports real billed dollars for admin-key holders (`provider_cost`); those are
+stored verbatim rather than re-derived from this table.
 """
 
 from __future__ import annotations
@@ -37,6 +40,27 @@ ANTHROPIC_RATES: dict[str, tuple[float, float]] = {
     "claude-haiku-4-5":   ( 1.00,  5.00),
 }
 
+# model id -> (input $/MTok, output $/MTok), per platform.openai.com/docs/pricing.
+# Cached input is a flat 0.10x input across every model below, same as
+# CACHE_READ_MULT, so it needs no separate table.
+OPENAI_RATES: dict[str, tuple[float, float]] = {
+    "gpt-5.6-sol":    ( 5.00,  30.00),
+    "gpt-5.6-terra":  ( 2.50,  15.00),
+    "gpt-5.6-luna":   ( 1.00,   6.00),
+    "gpt-5.5":        ( 5.00,  30.00),
+    "gpt-5.5-pro":    (30.00, 180.00),
+    "gpt-5.4":        ( 2.50,  15.00),
+    "gpt-5.4-mini":   ( 0.75,   4.50),
+    "gpt-5.4-nano":   ( 0.20,   1.25),
+    "gpt-5.4-pro":    (30.00, 180.00),
+    "gpt-5.3-codex":  ( 1.75,  14.00),
+}
+
+PROVIDER_RATES: dict[str, dict[str, tuple[float, float]]] = {
+    "anthropic": ANTHROPIC_RATES,
+    "openai": OPENAI_RATES,
+}
+
 # Promotional pricing that applies only inside a date window. Sonnet 5 launched
 # at an introductory rate; without this, July is over-costed.
 DATED_OVERRIDES: list[tuple[str, str, str, tuple[float, float]]] = [
@@ -62,7 +86,7 @@ def normalize_model(model: str) -> str:
     return model
 
 
-def rates_for(model: str, day: str) -> tuple[float, float] | None:
+def rates_for(model: str, day: str, provider: str = "anthropic") -> tuple[float, float] | None:
     """Return (input, output) $/MTok for a model on a given day, or None if we
     have no price for it. None is meaningful: the caller reports the tokens and
     omits the dollars rather than inventing a number."""
@@ -70,7 +94,7 @@ def rates_for(model: str, day: str) -> tuple[float, float] | None:
     for om, start, end, rate in DATED_OVERRIDES:
         if om == m and start <= day <= end:
             return rate
-    return ANTHROPIC_RATES.get(m)
+    return PROVIDER_RATES.get(provider, {}).get(m)
 
 
 def is_free(model: str) -> bool:
@@ -93,7 +117,8 @@ def cost_usd(row) -> float | None:
     if is_free(model):
         return 0.0
 
-    rate = rates_for(model, row["day"])
+    provider = row["provider"] if "provider" in row.keys() else "anthropic"
+    rate = rates_for(model, row["day"], provider)
     if rate is None:
         return None
 

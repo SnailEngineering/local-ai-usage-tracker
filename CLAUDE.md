@@ -77,8 +77,11 @@ returns `None` for a model with no known price; callers (`dashboard.py`) must
 surface that as "unpriced" rather than inventing a zero. `normalize_model()` strips
 the date suffix Claude Code sometimes appends (`claude-sonnet-4-5-20250929` →
 `claude-sonnet-4-5`); `DATED_OVERRIDES` handles promotional/introductory pricing
-windows. OpenAI has no rate table here at all — its real Costs figures are stored
-verbatim in `provider_cost` instead of being re-derived.
+windows. `PROVIDER_RATES` holds one list-price table per provider (`ANTHROPIC_RATES`,
+`OPENAI_RATES`) so both local sources get priced by list price when no real
+dollar figure exists; OpenAI's *admin-key* Costs figures are the exception —
+those are real invoice dollars, stored verbatim in `provider_cost` rather than
+re-derived from the rate table.
 
 ### Dashboard (`aiusage/dashboard.py`)
 
