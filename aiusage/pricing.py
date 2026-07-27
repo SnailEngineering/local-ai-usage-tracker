@@ -7,12 +7,9 @@ provider. Cache multipliers are relative to the model's base input rate:
     1-hour cache write   : 2.00x input
     cache read           : 0.10x input
 
-These are notional API list prices, not real invoices. They price the local
-sources (`claude_code_local`, `codex_local`), which cover subscription usage
-that no API ever bills per token, and any admin-API usage row that doesn't
-already carry a `reported_cost_usd`. OpenAI's Costs endpoint separately
-reports real billed dollars for admin-key holders (`provider_cost`); those are
-stored verbatim rather than re-derived from this table.
+These are notional API list prices, not real invoices -- both sources
+(`claude_code_local`, `codex_local`) cover subscription usage that is never
+actually billed per token.
 """
 
 from __future__ import annotations
@@ -104,15 +101,11 @@ def is_free(model: str) -> bool:
 
 def cost_usd(row) -> float | None:
     """Cost for one usage row. `row` needs the token columns plus `model`,
-    `day`, and `reported_cost_usd`.
+    `day`, and `provider`.
 
     Returns None when the model has no known price -- callers must surface that
     as "unpriced", never as zero.
     """
-    reported = row["reported_cost_usd"] if "reported_cost_usd" in row.keys() else None
-    if reported is not None:
-        return float(reported)
-
     model = row["model"]
     if is_free(model):
         return 0.0

@@ -32,7 +32,6 @@ def _agg(conn: sqlite3.Connection) -> list[dict]:
                SUM(cache_write_1h_tokens) AS cache_write_1h_tokens,
                SUM(cache_read_tokens)     AS cache_read_tokens,
                SUM(requests)              AS requests,
-               SUM(reported_cost_usd)     AS reported_cost_usd,
                COUNT(*)                   AS n_events
         FROM usage_event
         GROUP BY day, provider, source, model
@@ -108,7 +107,7 @@ def _build_payload(conn: sqlite3.Connection) -> dict:
         for e in sorted(months.values(), key=lambda x: x["month"])
     ]
 
-    # Per-project spend (Claude Code local ingest is the only source with a cwd).
+    # Per-project spend (project comes from the session's cwd, both sources set it).
     proj: dict[str, dict] = {}
     for r in conn.execute("""
         SELECT COALESCE(project,'(unknown)') AS project, provider, model,
@@ -116,7 +115,6 @@ def _build_payload(conn: sqlite3.Connection) -> dict:
                SUM(cache_write_5m_tokens) cache_write_5m_tokens,
                SUM(cache_write_1h_tokens) cache_write_1h_tokens,
                SUM(cache_read_tokens) cache_read_tokens,
-               SUM(reported_cost_usd) reported_cost_usd,
                MAX(day) last_day, COUNT(*) n
         FROM usage_event WHERE project IS NOT NULL
         GROUP BY project, provider, model

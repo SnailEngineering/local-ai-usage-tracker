@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """local-ai-usage-tracker collector.
 
-Run once or twice a day. Every source is optional and independently skippable,
-so a missing OpenAI key never blocks the Claude Code archive from running.
+Run once or twice a day. Every source is optional and independently
+skippable, so a problem in one never blocks the other from running.
 
     ./collect.py                 # collect everything configured, rebuild dashboard
     ./collect.py --no-dashboard  # collect only
@@ -22,9 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aiusage import db  # noqa: E402
-from aiusage.sources import (  # noqa: E402
-    anthropic_admin, claude_code_local, codex_local, openai_admin,
-)
+from aiusage.sources import claude_code_local, codex_local  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 
@@ -54,13 +52,10 @@ def main() -> int:
 
     ap = argparse.ArgumentParser(description="Collect AI usage from all configured sources.")
     ap.add_argument("--no-dashboard", action="store_true", help="skip regenerating dashboard.html")
-    ap.add_argument("--backfill-days", type=int,
-                    default=int(os.environ.get("AIU_BACKFILL_DAYS", "365")),
-                    help="how far back to reach on the first API run (default 365)")
     ap.add_argument("--status", action="store_true", help="print a summary and exit")
     ap.add_argument("--open", dest="open_after", action="store_true",
                     help="open the dashboard in your browser when done")
-    ap.add_argument("--only", choices=["claude_code", "codex", "anthropic", "openai"],
+    ap.add_argument("--only", choices=["claude_code", "codex"],
                     help="run a single source")
     args = ap.parse_args()
 
@@ -102,8 +97,6 @@ def main() -> int:
                        datetime.now(timezone.utc).isoformat())
         conn.commit()
 
-    anthropic_key = os.environ.get("ANTHROPIC_ADMIN_KEY", "").strip()
-    openai_key = os.environ.get("OPENAI_ADMIN_KEY", "").strip()
     only = args.only
 
     print(f"local-ai-usage-tracker  db={db_path}")
@@ -115,14 +108,6 @@ def main() -> int:
     stage("codex_local", only in (None, "codex"),
           lambda: codex_local.run(conn, codex_dir, archive_dir.parent / "archive-codex"),
           "--only excluded it")
-
-    stage("anthropic_admin", bool(anthropic_key) and only in (None, "anthropic"),
-          lambda: anthropic_admin.run(conn, anthropic_key, args.backfill_days),
-          "ANTHROPIC_ADMIN_KEY not set" if not anthropic_key else "--only excluded it")
-
-    stage("openai_admin", bool(openai_key) and only in (None, "openai"),
-          lambda: openai_admin.run(conn, openai_key, args.backfill_days),
-          "OPENAI_ADMIN_KEY not set" if not openai_key else "--only excluded it")
 
     if not args.no_dashboard:
         from aiusage import dashboard

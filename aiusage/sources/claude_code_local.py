@@ -113,7 +113,6 @@ def _usage_row(rec: dict, now: str) -> dict | None:
         "git_branch": rec.get("gitBranch") or None,
         "session_id": rec.get("sessionId") or rec.get("session_id"),
         "service_tier": usage.get("service_tier"),
-        "reported_cost_usd": None,
         "ingested_at": now,
     }
 

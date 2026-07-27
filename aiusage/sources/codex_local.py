@@ -181,7 +181,6 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     "git_branch": None,
                     "session_id": session_id,
                     "service_tier": (p.get("rate_limits") or {}).get("plan_type"),
-                    "reported_cost_usd": None,
                     "ingested_at": now,
                 })
 

@@ -9,12 +9,11 @@ from pathlib import Path
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
--- One row per billable unit of work. Granularity varies by source: Claude Code
--- local ingest is per-assistant-message; the Anthropic and OpenAI usage APIs
--- return pre-aggregated daily buckets. `requests` carries the count either way.
+-- One row per assistant message. `requests` carries the count for sources
+-- that ever aggregate (currently none do -- both sources are per-message).
 CREATE TABLE IF NOT EXISTS usage_event (
   id                    TEXT PRIMARY KEY,   -- stable dedupe key, see sources/
-  source                TEXT NOT NULL,      -- claude_code_local | anthropic_admin | openai_admin | ...
+  source                TEXT NOT NULL,      -- claude_code_local | codex_local
   provider              TEXT NOT NULL,      -- anthropic | openai | ollama
   ts                    TEXT NOT NULL,      -- ISO-8601 UTC
   day                   TEXT NOT NULL,      -- YYYY-MM-DD, local time
@@ -30,28 +29,12 @@ CREATE TABLE IF NOT EXISTS usage_event (
   git_branch            TEXT,
   session_id            TEXT,
   service_tier          TEXT,
-  reported_cost_usd     REAL,               -- set only when the provider bills us a real number
   ingested_at           TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS ix_usage_day      ON usage_event(day);
 CREATE INDEX IF NOT EXISTS ix_usage_provider ON usage_event(provider, day);
 CREATE INDEX IF NOT EXISTS ix_usage_model    ON usage_event(model, day);
-
--- Provider-reported dollars that don't decompose by model (OpenAI's costs
--- endpoint, Anthropic's cost_report). Kept apart from usage_event so a real
--- invoice figure is never confused with one we computed from tokens.
-CREATE TABLE IF NOT EXISTS provider_cost (
-  id          TEXT PRIMARY KEY,
-  provider    TEXT NOT NULL,
-  day         TEXT NOT NULL,
-  line_item   TEXT,
-  project_id  TEXT,
-  amount_usd  REAL NOT NULL,
-  ingested_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS ix_cost_day ON provider_cost(provider, day);
 
 -- Coarse daily totals recovered from Claude Code's own stats cache. Only a
 -- single token number per model per day -- no input/output/cache split -- so it
@@ -109,30 +92,18 @@ def set_state(conn: sqlite3.Connection, key: str, value: str, now: str) -> None:
 USAGE_COLUMNS = (
     "id source provider ts day model input_tokens output_tokens cache_write_5m_tokens "
     "cache_write_1h_tokens cache_read_tokens reasoning_tokens requests project git_branch "
-    "session_id service_tier reported_cost_usd ingested_at"
+    "session_id service_tier ingested_at"
 ).split()
 
 
 def upsert_usage(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    """INSERT OR REPLACE: per-message rows are immutable, but API buckets can be
-    restated for a day or two after the fact, so the latest read wins."""
+    """INSERT OR REPLACE: rows are immutable, but re-reading a truncated or
+    rewritten file is safe -- the dedupe key makes repeats a no-op."""
     if not rows:
         return 0
     placeholders = ", ".join("?" for _ in USAGE_COLUMNS)
     sql = f"INSERT OR REPLACE INTO usage_event ({', '.join(USAGE_COLUMNS)}) VALUES ({placeholders})"
     conn.executemany(sql, [[r.get(c) for c in USAGE_COLUMNS] for r in rows])
-    return len(rows)
-
-
-def upsert_cost(conn: sqlite3.Connection, rows: list[dict]) -> int:
-    if not rows:
-        return 0
-    cols = "id provider day line_item project_id amount_usd ingested_at".split()
-    sql = (
-        f"INSERT OR REPLACE INTO provider_cost ({', '.join(cols)}) "
-        f"VALUES ({', '.join('?' for _ in cols)})"
-    )
-    conn.executemany(sql, [[r.get(c) for c in cols] for r in rows])
     return len(rows)
 
 

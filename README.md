@@ -9,12 +9,14 @@ self-contained `dashboard.html`.
 launchd (2x/day)
   └─ collect.py
        ├─ ~/.claude/projects/*.jsonl   ─┐   (Claude Pro)
-       ├─ ~/.codex/sessions/*.jsonl    ─┤   (ChatGPT Plus)
-       ├─ Anthropic Admin API          ─┼─> data/usage.db (SQLite)
-       └─ OpenAI Admin API             ─┘        │
+       └─ ~/.codex/sessions/*.jsonl    ─┴─> data/usage.db (SQLite)
+                                                 │
                                                  v
                                           dashboard.html
 ```
+
+Both sources read local files only — no API keys, no network calls, nothing
+to configure. Just point it at `~/.claude` and `~/.codex` and run it.
 
 ## Example
 
@@ -44,7 +46,7 @@ aiusage-dashboard         # open dashboard.html
 
 `setup.sh` is idempotent — re-run it anytime. It will:
 
-- copy `.env.example` to `.env` if you don't have one (add API keys later, optional)
+- copy `.env.example` to `.env` if you don't have one (only needed to override default paths)
 - add `aiusage`, `aiusage-status`, and `aiusage-dashboard` aliases to `~/.zshrc`
 - offer to install the launchd agent that runs the collector twice a day
 
@@ -86,41 +88,20 @@ ever reset by a reinstall.
 |---|---|---|---|
 | `claude_code_local` | none | Claude Code, incl. Pro/Max subscription | forward from first run (+ the current 30-day window) |
 | `codex_local` | none | Codex CLI & Desktop, incl. ChatGPT Plus | forward from first run (+ whatever Codex still holds) |
-| `anthropic_admin` | Admin key, **orgs only** | metered API usage; Claude Code analytics | backfills |
-| `openai_admin` | Admin key, **orgs only** | platform API usage (**not** ChatGPT) | backfills |
 
-### If you are on $20 individual plans
-
-Neither vendor exposes subscription usage through an API, and neither will issue
-an admin key without an organization. The local sources are the whole answer, and
-they are not a consolation prize — both record per-turn token counts with the
-working directory attached, which no endpoint provides.
+Both sources are local-only, by design — no admin key, no organization, no
+network call. That also means they're the whole answer, not a fallback: they
+record per-turn token counts with the working directory and git branch
+attached, which is more granular than either vendor's usage API exposes even
+to an org with an admin key.
 
 What is **not** recoverable: usage from the chat web apps themselves
 (claude.ai, chatgpt.com). Those run server-side and write nothing locally. Only
 the coding agents — Claude Code and Codex — keep a local ledger.
 
 Every source writes the same `usage_event` schema, so the dashboard and all
-queries are provider-agnostic. Sources are independently skippable — a missing
-OpenAI key never blocks the Claude Code archive.
-
-### A note on the Anthropic API
-
-Anthropic *does* have usage endpoints that mirror OpenAI's shape:
-
-- `/v1/organizations/usage_report/messages` — tokens by model, daily buckets
-- `/v1/organizations/cost_report` — billed dollars
-- `/v1/organizations/usage_report/claude_code` — per-user Claude Code, and it
-  reports `customer_type: "subscription"`, so it does cover Pro/Max seats
-
-All three need an Admin API key (`sk-ant-admin01-…`), and **Anthropic does not
-issue those to individual accounts** — you need an organization. If you set one
-up, drop the key in `.env` and `anthropic_admin` activates with no other
-changes; it lands in the same table alongside the local ingest.
-
-Until then the local JSONL ingest is the only path to Claude Code numbers, which
-is why it exists. It is not a downgrade: it is *more* granular than the API
-(per-message, with `cwd` and git branch, which no endpoint exposes).
+queries are provider-agnostic. Sources are independently skippable — a
+problem in one never blocks the other.
 
 ## Cost accounting
 
@@ -135,14 +116,10 @@ re-prices all history instead of freezing bad numbers into rows. Rates live in
 A model with no rate on file is counted in tokens and **excluded from cost**,
 never silently priced at zero; the dashboard says so.
 
-`openai_admin`'s Costs endpoint is the one exception: it reports real billed
-dollars for admin-key holders, so those go into `provider_cost` verbatim
-instead of being re-derived from the rate table.
-
-> **These dollars are notional if you are on a subscription.** They are token
-> counts × list API prices — the right measure of *what you consumed*, but not
-> an invoice. ChatGPT Plus and Claude Pro/Max don't bill per token at all.
-> Don't reconcile these numbers against a card statement.
+> **These dollars are notional.** They are token counts × list API prices —
+> the right measure of *what you consumed*, but not an invoice. ChatGPT Plus
+> and Claude Pro/Max don't bill per token at all. Don't reconcile these
+> numbers against a card statement.
 
 ## Verification
 
@@ -160,9 +137,9 @@ by a direct scan of `~/.codex/sessions`.
 ## Design notes
 
 **Idempotency.** Every row carries a deterministic primary key — message id +
-request id for Claude Code, bucket + model + project for the APIs — and writes
-are `INSERT OR REPLACE`. Running the collector twice in a row changes nothing,
-and API buckets that get restated a day later self-correct.
+request id for Claude Code, session id + sequence for Codex — and writes are
+`INSERT OR REPLACE`. Running the collector twice in a row, or resuming a
+truncated file, changes nothing.
 
 **Codex token math.** `info.total_token_usage` is cumulative per session while
 `info.last_token_usage` is the per-turn delta; the deltas sum exactly to the
@@ -191,13 +168,10 @@ local.ai-usage-tracker.plist.template   launchd agent template (setup.sh fills i
 aiusage/
   db.py                                 schema, upserts, run log
   pricing.py                            rate table, cost computation
-  http.py                               stdlib GET with retry/backoff
   dashboard.py                          SQL -> JSON -> static HTML
   sources/
     claude_code_local.py                archive + incremental JSONL parse
     codex_local.py                      same, for Codex rollout files
-    anthropic_admin.py                  Usage & Cost Admin API
-    openai_admin.py                     Usage & Costs API
 data/
   usage.db                              SQLite
   archive/                              mirrored Claude Code JSONL, the durable copy
