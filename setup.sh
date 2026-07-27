@@ -5,10 +5,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ZSHRC="${ZDOTDIR:-$HOME}/.zshrc"
-MARK_BEGIN="# >>> ai-usage-tracker >>>"
-MARK_END="# <<< ai-usage-tracker <<<"
+MARK_BEGIN="# >>> local-ai-usage-tracker >>>"
+MARK_END="# <<< local-ai-usage-tracker <<<"
 
-echo "ai-usage-tracker setup  (repo: $REPO_DIR)"
+echo "local-ai-usage-tracker setup  (repo: $REPO_DIR)"
 echo
 
 # --- .env -------------------------------------------------------------
@@ -39,11 +39,11 @@ fi
 echo
 read -r -p "Install the launchd agent to run collect.py twice a day? [y/N] " reply
 if [[ "$reply" =~ ^[Yy]$ ]]; then
-  PLIST_DEST="$HOME/Library/LaunchAgents/local.aiusage-tracker.plist"
-  sed "s#__REPO_DIR__#$REPO_DIR#g" "$REPO_DIR/com.aiusage.plist.template" > "$PLIST_DEST"
+  PLIST_DEST="$HOME/Library/LaunchAgents/local.ai-usage-tracker.plist"
+  sed "s#__REPO_DIR__#$REPO_DIR#g" "$REPO_DIR/local.ai-usage-tracker.plist.template" > "$PLIST_DEST"
   launchctl unload "$PLIST_DEST" 2>/dev/null || true
   launchctl load "$PLIST_DEST"
-  launchctl start local.aiusage-tracker
+  launchctl start local.ai-usage-tracker
   echo "[launchd]   installed and started -- logs at $REPO_DIR/data/collect.log"
 else
   echo "[launchd]   skipped (run this script again anytime to install it)"

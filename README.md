@@ -1,8 +1,9 @@
-# ai-usage-tracker
+# local-ai-usage-tracker
 
-Local, permanent history of AI spend across providers. Stdlib Python + SQLite,
-no dependencies, no server. Runs from launchd once or twice a day and writes a
-single self-contained `dashboard.html`.
+A permanent, local history of Claude Code and ChatGPT (Codex) usage, with a
+dashboard of theoretical cost. Stdlib Python + SQLite, no dependencies, no
+server. Runs from launchd once or twice a day and writes a single
+self-contained `dashboard.html`.
 
 ```
 launchd (2x/day)
@@ -27,7 +28,7 @@ instead of scrolling off the back.
 
 ```sh
 git clone <this repo>
-cd ai-usage-tracker
+cd local-ai-usage-tracker
 ./setup.sh                # .env, shell aliases, optional launchd schedule
 aiusage                   # collect + build dashboard (alias for ./collect.py)
 aiusage-dashboard         # open dashboard.html
@@ -45,14 +46,15 @@ few runs.
 
 ### Schedule it
 
-`setup.sh` handles this (see above) by rendering `com.aiusage.plist.template`
-with your actual repo path and loading it. To do it manually instead:
+`setup.sh` handles this (see above) by rendering
+`local.ai-usage-tracker.plist.template` with your actual repo path and loading
+it. To do it manually instead:
 
 ```sh
-sed "s#__REPO_DIR__#$(pwd)#g" com.aiusage.plist.template \
-  > ~/Library/LaunchAgents/local.aiusage-tracker.plist
-launchctl load ~/Library/LaunchAgents/local.aiusage-tracker.plist
-launchctl start local.aiusage-tracker    # run once now to verify
+sed "s#__REPO_DIR__#$(pwd)#g" local.ai-usage-tracker.plist.template \
+  > ~/Library/LaunchAgents/local.ai-usage-tracker.plist
+launchctl load ~/Library/LaunchAgents/local.ai-usage-tracker.plist
+launchctl start local.ai-usage-tracker    # run once now to verify
 tail -f data/collect.log
 ```
 
@@ -174,24 +176,24 @@ table and shown as a footnote, never mixed into cost totals.
 ## Layout
 
 ```
-collect.py                     entry point
-setup.sh                       one-time setup: .env, shell aliases, launchd
-com.aiusage.plist.template     launchd agent template (setup.sh fills in the path)
+collect.py                              entry point
+setup.sh                                one-time setup: .env, shell aliases, launchd
+local.ai-usage-tracker.plist.template   launchd agent template (setup.sh fills in the path)
 aiusage/
-  db.py                        schema, upserts, run log
-  pricing.py                   rate table, cost computation
-  http.py                      stdlib GET with retry/backoff
-  dashboard.py                 SQL -> JSON -> static HTML
+  db.py                                 schema, upserts, run log
+  pricing.py                            rate table, cost computation
+  http.py                               stdlib GET with retry/backoff
+  dashboard.py                          SQL -> JSON -> static HTML
   sources/
-    claude_code_local.py       archive + incremental JSONL parse
-    codex_local.py             same, for Codex rollout files
-    anthropic_admin.py         Usage & Cost Admin API
-    openai_admin.py            Usage & Costs API
+    claude_code_local.py                archive + incremental JSONL parse
+    codex_local.py                      same, for Codex rollout files
+    anthropic_admin.py                  Usage & Cost Admin API
+    openai_admin.py                     Usage & Costs API
 data/
-  usage.db                     SQLite
-  archive/                     mirrored Claude Code JSONL, the durable copy
-  archive-codex/               mirrored Codex rollout files
-dashboard.html                 regenerated each run
+  usage.db                              SQLite
+  archive/                              mirrored Claude Code JSONL, the durable copy
+  archive-codex/                        mirrored Codex rollout files
+dashboard.html                          regenerated each run
 ```
 
 ## Privacy

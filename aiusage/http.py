@@ -9,7 +9,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-USER_AGENT = "ai-usage-tracker/0.1 (+local)"
+USER_AGENT = "local-ai-usage-tracker/0.1 (+local)"
 
 RETRY_STATUS = {429, 500, 502, 503, 504, 529}
 

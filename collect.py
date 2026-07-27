@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ai-usage-tracker collector.
+"""local-ai-usage-tracker collector.
 
 Run once or twice a day. Every source is optional and independently skippable,
 so a missing OpenAI key never blocks the Claude Code archive from running.
@@ -106,7 +106,7 @@ def main() -> int:
     openai_key = os.environ.get("OPENAI_ADMIN_KEY", "").strip()
     only = args.only
 
-    print(f"ai-usage-tracker  db={db_path}")
+    print(f"local-ai-usage-tracker  db={db_path}")
 
     stage("claude_code_local", only in (None, "claude_code"),
           lambda: claude_code_local.run(conn, claude_dir, archive_dir),
