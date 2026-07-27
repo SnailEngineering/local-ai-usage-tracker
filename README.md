@@ -16,6 +16,14 @@ launchd (2x/day)
                                           dashboard.html
 ```
 
+## Example
+
+![Dashboard showing daily cost by provider and daily tokens by model](docs/dashboard-example.png)
+
+Real output from an actual `dashboard.html` — nothing here is staged. Every
+number, chart, and note (including the "some tokens are unpriced" callout) is
+generated straight from `usage_event`; there's no separate demo mode.
+
 ## Why this exists
 
 `ccusage` reads `~/.claude/projects/*.jsonl`, and **Claude Code deletes those on
