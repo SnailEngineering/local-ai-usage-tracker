@@ -63,12 +63,36 @@ interval (60s by default). What that does depends on how you opened it:
 - **Plain file** (double-click, or `aiusage-dashboard`): refresh reloads
   whatever's currently on disk — useful after a manual `./collect.py` run, or
   just to pick up the next launchd run without reopening the tab.
-- **`./collect.py --serve`**: starts a small local server at
-  `http://127.0.0.1:8787/` and opens it. Every refresh (auto or click)
-  re-runs both collectors and re-renders the charts in place — no full page
-  reload, no need to leave a separate terminal running `./collect.py`
-  yourself. `Ctrl+C` stops it; `--port` and `--interval` (seconds) override
-  the defaults.
+- **`./collect.py --serve`**: a small local `ThreadingHTTPServer`
+  (`aiusage/server.py`) at `http://127.0.0.1:8787/`. Every refresh (auto or
+  click) hits `GET /api/data`, which re-runs both collectors and re-renders
+  the charts in place — no full page reload, no separate terminal running
+  `./collect.py` yourself.
+
+Start it in the foreground and open a browser tab:
+
+```sh
+./collect.py --serve --open
+```
+
+Or in the background, e.g. to leave running while you work:
+
+```sh
+./collect.py --serve > data/serve.log 2>&1 &
+```
+
+`--port` (default `8787`) and `--interval` (seconds, default `60`) override
+the defaults.
+
+To stop it: `Ctrl+C` if it's in the foreground; otherwise find and kill the
+process by port —
+
+```sh
+lsof -ti:8787 | xargs kill
+```
+
+(swap `8787` for whatever `--port` you used). It holds no state beyond the
+SQLite connection, so killing it any time is safe.
 
 ### Schedule it
 
