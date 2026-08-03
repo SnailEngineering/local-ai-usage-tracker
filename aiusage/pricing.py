@@ -42,8 +42,8 @@ ANTHROPIC_RATES: dict[str, tuple[float, float]] = {
 # CACHE_READ_MULT, so it needs no separate table.
 OPENAI_RATES: dict[str, tuple[float, float]] = {
     "gpt-5.6-sol":    ( 5.00,  30.00),
-    "gpt-5.6-terra":  ( 2.50,  15.00),
-    "gpt-5.6-luna":   ( 1.00,   6.00),
+    "gpt-5.6-terra":  ( 2.00,  12.00),
+    "gpt-5.6-luna":   ( 0.20,   1.20),
     "gpt-5.5":        ( 5.00,  30.00),
     "gpt-5.5-pro":    (30.00, 180.00),
     "gpt-5.4":        ( 2.50,  15.00),
@@ -63,6 +63,10 @@ PROVIDER_RATES: dict[str, dict[str, tuple[float, float]]] = {
 DATED_OVERRIDES: list[tuple[str, str, str, tuple[float, float]]] = [
     # (model, start_day_inclusive, end_day_inclusive, (input, output))
     ("claude-sonnet-5", "2026-01-01", "2026-08-31", (2.00, 10.00)),
+    # Preserve the rates used by tracker releases through the 2026-08-01
+    # refresh. Current OpenAI API list rates are the defaults above.
+    ("gpt-5.6-terra", "0001-01-01", "2026-08-01", (2.50, 15.00)),
+    ("gpt-5.6-luna", "0001-01-01", "2026-08-01", (1.00, 6.00)),
 ]
 
 # Models that cost nothing to run but are still worth counting.
