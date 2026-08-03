@@ -85,16 +85,22 @@ def build_payload(conn: sqlite3.Connection) -> dict:
             unpriced_models.add(r["model"])
         tokens_by_day[r["day"]][bucket(r["model"])] += r["total_tokens"]
 
-    # Monthly table, mirroring the shape ccusage prints.
+    # Monthly table, mirroring the shape ccusage prints. Each row also carries
+    # the counts the month drill-down needs for its own tiles, so clicking a
+    # month is a pure client-side re-render -- no server, no second query.
     months: dict[str, dict] = {}
+    month_models: dict[str, dict[str, dict]] = defaultdict(dict)
     for r in rows:
         m = r["day"][:7]
         e = months.setdefault(m, {
-            "month": m, "models": set(), "input_tokens": 0, "output_tokens": 0,
+            "month": m, "models": set(), "days": set(), "events": 0,
+            "input_tokens": 0, "output_tokens": 0,
             "cache_write": 0, "cache_read": 0, "total_tokens": 0,
             "cost_usd": 0.0, "unpriced": False,
         })
         e["models"].add(r["model"])
+        e["days"].add(r["day"])
+        e["events"] += r["n_events"]
         e["input_tokens"] += r["input_tokens"]
         e["output_tokens"] += r["output_tokens"]
         e["cache_write"] += r["cache_write_5m_tokens"] + r["cache_write_1h_tokens"]
@@ -104,39 +110,75 @@ def build_payload(conn: sqlite3.Connection) -> dict:
             e["cost_usd"] += r["cost_usd"]
         else:
             e["unpriced"] = True
-    month_rows = [
-        {**e, "models": sorted(e["models"])}
-        for e in sorted(months.values(), key=lambda x: x["month"])
-    ]
 
-    # Per-project spend (project comes from the session's cwd, both sources set it).
+        me = month_models[m].setdefault(r["model"], {
+            "model": r["model"], "input_tokens": 0, "output_tokens": 0,
+            "cache_write": 0, "cache_read": 0, "total_tokens": 0,
+            "cost_usd": 0.0, "unpriced": False,
+        })
+        me["input_tokens"] += r["input_tokens"]
+        me["output_tokens"] += r["output_tokens"]
+        me["cache_write"] += r["cache_write_5m_tokens"] + r["cache_write_1h_tokens"]
+        me["cache_read"] += r["cache_read_tokens"]
+        me["total_tokens"] += r["total_tokens"]
+        if r["priced"]:
+            me["cost_usd"] += r["cost_usd"]
+        else:
+            me["unpriced"] = True
+
+    month_rows = []
+    for e in sorted(months.values(), key=lambda x: x["month"]):
+        e = dict(e)
+        e["active_days"] = len(e["days"])
+        e["models"] = sorted(e["models"])
+        del e["days"]
+        month_rows.append(e)
+    month_model_rows = {
+        m: sorted(v.values(), key=lambda x: -x["total_tokens"])
+        for m, v in month_models.items()
+    }
+
+    # Per-project spend (project comes from the session's cwd, both sources set
+    # it). Grouped by month so the drill-down gets its own ranking; the all-time
+    # table is the same numbers summed back up.
     proj: dict[str, dict] = {}
+    month_proj: dict[str, dict[str, dict]] = defaultdict(dict)
+
+    def _proj_entry(store: dict, d: dict) -> dict:
+        return store.setdefault(d["project"], {
+            "project": d["project"], "cost_usd": 0.0, "total_tokens": 0,
+            "last_day": d["last_day"], "messages": 0,
+        })
+
     for r in conn.execute("""
-        SELECT COALESCE(project,'(unknown)') AS project, provider, model,
+        SELECT substr(day,1,7) AS month, COALESCE(project,'(unknown)') AS project,
+               provider, model,
                SUM(input_tokens) input_tokens, SUM(output_tokens) output_tokens,
                SUM(cache_write_5m_tokens) cache_write_5m_tokens,
                SUM(cache_write_1h_tokens) cache_write_1h_tokens,
                SUM(cache_read_tokens) cache_read_tokens,
                MAX(day) last_day, COUNT(*) n
         FROM usage_event WHERE project IS NOT NULL
-        GROUP BY project, provider, model
+        GROUP BY month, project, provider, model
     """):
         d = dict(r)
         d["day"] = d["last_day"]
         d["model"] = pricing.normalize_model(d["model"])
-        c = pricing.cost_usd(d)
-        e = proj.setdefault(d["project"], {
-            "project": d["project"], "cost_usd": 0.0, "total_tokens": 0,
-            "last_day": d["last_day"], "messages": 0,
-        })
-        e["cost_usd"] += c or 0.0
-        e["total_tokens"] += (
+        c = pricing.cost_usd(d) or 0.0
+        tokens = (
             d["input_tokens"] + d["output_tokens"] + d["cache_write_5m_tokens"]
             + d["cache_write_1h_tokens"] + d["cache_read_tokens"]
         )
-        e["messages"] += d["n"]
-        e["last_day"] = max(e["last_day"], d["last_day"])
+        for e in (_proj_entry(proj, d), _proj_entry(month_proj[d["month"]], d)):
+            e["cost_usd"] += c
+            e["total_tokens"] += tokens
+            e["messages"] += d["n"]
+            e["last_day"] = max(e["last_day"], d["last_day"])
     project_rows = sorted(proj.values(), key=lambda x: -x["cost_usd"])[:15]
+    month_project_rows = {
+        m: sorted(v.values(), key=lambda x: -x["cost_usd"])[:15]
+        for m, v in month_proj.items()
+    }
 
     # Coarse backfill: days we know were active but can no longer price.
     coarse = [
@@ -186,6 +228,8 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "cost_by_day": {d: dict(v) for d, v in cost_by_day.items()},
         "tokens_by_day": {d: dict(v) for d, v in tokens_by_day.items()},
         "months": month_rows,
+        "month_models": month_model_rows,
+        "month_projects": month_project_rows,
         "projects": project_rows,
         "coarse": coarse,
         "totals": totals,
@@ -216,6 +260,7 @@ TEMPLATE = r"""<!doctype html>
     --page:#f9f9f7; --surface:#fcfcfb;
     --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
     --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --hover:rgba(11,11,11,0.045);
     --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
     --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
   }
@@ -225,6 +270,7 @@ TEMPLATE = r"""<!doctype html>
       --page:#0d0d0d; --surface:#1a1a19;
       --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
       --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+      --hover:rgba(255,255,255,0.055);
       --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
       --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
     }
@@ -234,6 +280,7 @@ TEMPLATE = r"""<!doctype html>
     --page:#0d0d0d; --surface:#1a1a19;
     --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --hover:rgba(255,255,255,0.055);
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
     --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
   }
@@ -309,6 +356,23 @@ TEMPLATE = r"""<!doctype html>
              font-variant-numeric:tabular-nums; padding-top:11px; }
   .models { color:var(--muted); font-size:11.5px; white-space:normal; }
 
+  /* Month rows drill into a single month. The row is the click target; the
+     month name is a real link so keyboard and middle-click work too. */
+  tbody tr.link { cursor:pointer; }
+  tbody tr.link:hover td { background:var(--hover); }
+  tbody tr.link td:first-child { position:relative; }
+  a.drill { color:inherit; text-decoration:none; }
+  a.drill:hover, tr.link:hover a.drill { text-decoration:underline; }
+  a.drill::after { content:' \203a'; color:var(--muted); font-weight:600; }
+
+  .crumbs { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:18px; }
+  .crumbs .btn { text-decoration:none; display:inline-block; }
+  .crumbs .btn[aria-disabled="true"] { opacity:.4; pointer-events:none; }
+  .crumbs h2 { font-size:17px; margin:0 4px 0 2px; letter-spacing:-0.01em; }
+  .crumbs .nav { margin-left:auto; display:flex; gap:8px; }
+  .delta.up { color:var(--s8); } .delta.down { color:var(--s6); }
+  td .swatch { display:inline-block; margin-right:7px; vertical-align:baseline; }
+
   .note { font-size:12.5px; color:var(--ink-2); border-left:2px solid var(--s4);
           padding:2px 0 2px 12px; margin-top:16px; }
   .empty { color:var(--muted); padding:26px 0; text-align:center; }
@@ -355,6 +419,7 @@ function colorOf(key, slots) {
    colour alone. */
 function stackedBars(el, opts) {
   const { days, series, byDay, slots, fmt, label } = opts;
+  const tickFmt = opts.tickFmt || (d => d.slice(5));
   const W = el.clientWidth || 900, H = 230;
   const padL = 56, padR = 12, padT = 12, padB = 26;
   const iw = Math.max(W - padL - padR, 10), ih = H - padT - padB;
@@ -393,7 +458,7 @@ function stackedBars(el, opts) {
   const every = Math.max(1, Math.ceil(days.length / 7));
   days.forEach((d, i) => {
     if (i % every === 0 || i === days.length - 1) {
-      ticks += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${d.slice(5)}</text>`;
+      ticks += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${tickFmt(d)}</text>`;
     }
   });
 
@@ -446,10 +511,22 @@ function legend(keys, slots) {
     `<span><i class="swatch" style="background:${colorOf(k, slots)}"></i>${esc(k)}</span>`).join('') + '</div>';
 }
 
+/* Routing is a single hash: '' is the all-time view, '#month=YYYY-MM' drills
+   into one month. Keeping it in the URL means a month survives auto-refresh,
+   reload, and back/forward, and can be bookmarked -- all without a server,
+   since every month's numbers already ship inside DATA. */
+function routedMonth() {
+  const m = /^#month=(\d{4}-\d{2})$/.exec(location.hash || '');
+  return m && DATA.months.some(x => x.month === m[1]) ? m[1] : null;
+}
+
+const monthName = m =>
+  new Date(m + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+const dayOfMonth = d => String(+d.slice(8));
+
 function render() {
   document.getElementById('stamp').textContent = 'updated ' + DATA.generated_at;
   const app = document.getElementById('app');
-  const T = DATA.totals;
 
   if (!DATA.days.length) {
     app.innerHTML = `<div class="card"><div class="empty">No usage recorded yet.<br>
@@ -457,6 +534,20 @@ function render() {
     return;
   }
 
+  const m = routedMonth();
+  if (m) renderMonth(app, m); else renderAll(app);
+
+  // Whole-row click for the month table; the inner <a> already handles keys.
+  app.querySelectorAll('tr.link').forEach(tr => {
+    tr.addEventListener('click', ev => {
+      if (ev.target.closest('a')) return;
+      location.hash = 'month=' + tr.dataset.month;
+    });
+  });
+}
+
+function renderAll(app) {
+  const T = DATA.totals;
   const cacheShare = T.total_tokens ? (T.cache_read / T.total_tokens * 100) : 0;
   const span = DATA.days[0] + ' → ' + DATA.days[DATA.days.length - 1];
 
@@ -494,12 +585,14 @@ function render() {
 
   <div class="card">
     <h2>By month</h2>
-    <p class="sub">Same shape as <code>ccusage monthly</code>, but it keeps growing.</p>
+    <p class="sub">Same shape as <code>ccusage monthly</code>, but it keeps growing.
+      Pick a month for its own charts, models and projects.</p>
     <div class="scroll"><table>
       <thead><tr><th>Month</th><th>Input</th><th>Output</th><th>Cache write</th>
         <th>Cache read</th><th>Total</th><th>Cost</th></tr></thead>
-      <tbody>${DATA.months.map(m => `<tr>
-        <td>${m.month}<div class="models">${m.models.map(esc).join(', ')}</div></td>
+      <tbody>${DATA.months.map(m => `<tr class="link" data-month="${m.month}">
+        <td><a class="drill" href="#month=${m.month}">${m.month}</a>
+          <div class="models">${m.models.map(esc).join(', ')}</div></td>
         <td>${num(m.input_tokens)}</td><td>${num(m.output_tokens)}</td>
         <td>${num(m.cache_write)}</td><td>${num(m.cache_read)}</td>
         <td>${num(m.total_tokens)}</td>
@@ -569,7 +662,138 @@ function render() {
   });
 }
 
+/* One month, same layout as the all-time view. Nothing is fetched: the charts
+   reuse the daily series filtered to the month, the tables use the per-month
+   rollups build_payload() already ships. */
+function renderMonth(app, month) {
+  const M = DATA.months.find(x => x.month === month);
+  const i = DATA.months.indexOf(M);
+  const prev = DATA.months[i - 1], next = DATA.months[i + 1];
+  const models = DATA.month_models[month] || [];
+  const projects = DATA.month_projects[month] || [];
+  const title = monthName(month);
+
+  // Whole calendar month, clipped at today for the month in progress, so idle
+  // days show up as gaps in the bars instead of being collapsed away.
+  const active = DATA.days.filter(d => d.startsWith(month));
+  const today = DATA.generated_at.slice(0, 10);
+  const lastActive = active[active.length - 1] || '';
+  const cutoff = lastActive > today ? lastActive : today;
+  const nDays = new Date(+month.slice(0, 4), +month.slice(5, 7), 0).getDate();
+  const days = [];
+  for (let d = 1; d <= nDays; d++) {
+    const day = month + '-' + String(d).padStart(2, '0');
+    if (day > cutoff) break;
+    days.push(day);
+  }
+
+  // Only series that actually appear this month, so the legend stays honest.
+  const providers = DATA.providers.filter(p => days.some(d => ((DATA.cost_by_day[d] || {})[p] || 0) > 0));
+  const series = DATA.models.filter(k => days.some(d => ((DATA.tokens_by_day[d] || {})[k] || 0) > 0));
+
+  const cacheShare = M.total_tokens ? (M.cache_read / M.total_tokens * 100) : 0;
+  let delta = 'first month on record';
+  if (prev && prev.cost_usd > 0) {
+    const pct = (M.cost_usd - prev.cost_usd) / prev.cost_usd * 100;
+    delta = `<span class="delta ${pct >= 0 ? 'up' : 'down'}">${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(0)}%</span>`
+          + ` vs ${prev.month}`;
+  } else if (prev) {
+    delta = 'vs ' + prev.month;
+  }
+
+  const navLink = (m, text) => m
+    ? `<a class="btn" href="#month=${m.month}">${text}</a>`
+    : `<span class="btn" aria-disabled="true">${text}</span>`;
+
+  let html = `
+  <div class="crumbs">
+    <a class="btn" href="#">&larr; All time</a>
+    <h2>${title}</h2>
+    <div class="nav">
+      ${navLink(prev, '‹ ' + (prev ? prev.month : 'Earlier'))}
+      ${navLink(next, (next ? next.month : 'Later') + ' ›')}
+    </div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">Cost</div><div class="v">${usd2(M.cost_usd)}${M.unpriced ? ' *' : ''}</div>
+      <div class="n">${delta}</div></div>
+    <div class="tile"><div class="k">Tokens</div><div class="v">${tok(M.total_tokens)}</div>
+      <div class="n">${num(M.events)} messages</div></div>
+    <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
+      <div class="n">of this month's tokens</div></div>
+    <div class="tile"><div class="k">Active days</div><div class="v">${M.active_days}</div>
+      <div class="n">${usd2(M.cost_usd / Math.max(M.active_days, 1))} / active day</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Daily cost by provider</h2>
+    <p class="sub">${title}, at list prices. Days with no recorded usage are left blank.</p>
+    <div class="chart" id="c-cost"></div>
+    ${legend(providers, DATA.provider_slot)}
+  </div>
+
+  <div class="card">
+    <h2>Daily tokens by model</h2>
+    <p class="sub">All token types combined, including cache reads.</p>
+    <div class="chart" id="c-tok"></div>
+    ${legend(series, DATA.model_slot)}
+  </div>
+
+  <div class="card">
+    <h2>By model</h2>
+    <p class="sub">Every model used in ${title}, largest first. Models folded into the
+      chart's &ldquo;Other&rdquo; series above are itemised here.</p>
+    <div class="scroll"><table>
+      <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache write</th>
+        <th>Cache read</th><th>Total</th><th>Cost</th></tr></thead>
+      <tbody>${models.map(m => `<tr><td>${
+          DATA.model_slot[m.model] === undefined ? ''
+            : `<i class="swatch" style="background:${colorOf(m.model, DATA.model_slot)}"></i>`
+        }${esc(m.model)}</td>
+        <td>${num(m.input_tokens)}</td><td>${num(m.output_tokens)}</td>
+        <td>${num(m.cache_write)}</td><td>${num(m.cache_read)}</td>
+        <td>${num(m.total_tokens)}</td>
+        <td class="num-strong">${usd2(m.cost_usd)}${m.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Total</td>
+        <td>${num(M.input_tokens)}</td><td>${num(M.output_tokens)}</td>
+        <td>${num(M.cache_write)}</td><td>${num(M.cache_read)}</td>
+        <td>${num(M.total_tokens)}</td><td>${usd2(M.cost_usd)}</td></tr></tfoot>
+    </table></div>
+  </div>`;
+
+  if (projects.length) {
+    html += `<div class="card">
+      <h2>Top projects</h2>
+      <p class="sub">Ranked within ${title} only &mdash; the all-time table ranks across every month.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Project</th><th>Messages</th><th>Tokens</th><th>Last used</th><th>Cost</th></tr></thead>
+        <tbody>${projects.map(p => `<tr><td>${esc(p.project)}</td>
+          <td>${num(p.messages)}</td><td>${tok(p.total_tokens)}</td>
+          <td>${p.last_day}</td><td class="num-strong">${usd2(p.cost_usd)}</td></tr>`).join('')}</tbody>
+      </table></div></div>`;
+  }
+
+  if (M.unpriced) {
+    html += `<div class="card"><div class="note">Some tokens this month came from a model with no
+      price on file, so they are counted but excluded from cost. Rows affected are marked *.
+      Add rates in <code>aiusage/pricing.py</code>.</div></div>`;
+  }
+
+  app.innerHTML = html;
+
+  stackedBars(document.getElementById('c-cost'), {
+    days, series: providers, byDay: DATA.cost_by_day, tickFmt: dayOfMonth,
+    slots: DATA.provider_slot, fmt: usd, label: 'Daily cost by provider, ' + title,
+  });
+  stackedBars(document.getElementById('c-tok'), {
+    days, series, byDay: DATA.tokens_by_day, tickFmt: dayOfMonth,
+    slots: DATA.model_slot, fmt: tok, label: 'Daily tokens by model, ' + title,
+  });
+}
+
 render();
+addEventListener('hashchange', () => { render(); scrollTo(0, 0); });
 let t; addEventListener('resize', () => { clearTimeout(t); t = setTimeout(render, 180); });
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 

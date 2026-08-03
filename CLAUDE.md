@@ -80,6 +80,13 @@ step, no network needed to view it. Model series beyond `MAX_MODEL_SERIES` (8)
 fold into "Other"; provider→color slot is fixed (`PROVIDER_SLOT`) so adding a
 third provider never repaints the first two.
 
+Clicking a row in the "By month" table drills into that month
+(`#month=YYYY-MM` in the hash — bookmarkable, survives auto-refresh). The
+drill-down is pure client-side re-render: `build_payload()` ships
+`month_models` and `month_projects` rollups alongside the all-time ones, and
+the charts just filter the existing daily series, so a month view needs no
+server and no second query.
+
 The page always ships a Refresh button and a `setInterval` auto-refresh
 (`__REFRESH_MS__`, default 60s). Both call the same JS function, which tries
 `fetch('/api/data')` first and falls back to `location.reload()` if that
