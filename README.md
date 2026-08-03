@@ -69,7 +69,7 @@ interval (60s by default). What that does depends on how you opened it:
   the charts in place — no full page reload, no separate terminal running
   `./collect.py` yourself.
 
-Start it in the foreground and open a browser tab:
+Start it in the foreground; add `--open` to launch it in your browser:
 
 ```sh
 ./collect.py --serve --open

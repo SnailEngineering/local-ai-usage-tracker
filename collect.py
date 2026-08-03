@@ -99,7 +99,7 @@ def main() -> int:
     ap.add_argument("--no-dashboard", action="store_true", help="skip regenerating dashboard.html")
     ap.add_argument("--status", action="store_true", help="print a summary and exit")
     ap.add_argument("--open", dest="open_after", action="store_true",
-                    help="open the dashboard in your browser when done")
+                    help="open the dashboard, or the local server with --serve, when ready")
     ap.add_argument("--only", choices=["claude_code", "codex"],
                     help="run a single source")
     ap.add_argument("--serve", action="store_true",
@@ -142,7 +142,8 @@ def main() -> int:
         url = f"http://127.0.0.1:{args.port}/"
         print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "
               f"request to /api/data)")
-        subprocess.run(["open", url], check=False)
+        if args.open_after:
+            subprocess.run(["open", url], check=False)
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

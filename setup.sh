@@ -16,7 +16,7 @@ if [ -f "$REPO_DIR/.env" ]; then
   echo "[.env]      already exists, leaving it alone"
 else
   cp "$REPO_DIR/.env.example" "$REPO_DIR/.env"
-  echo "[.env]      created from .env.example (edit it to add API keys, optional)"
+  echo "[.env]      created from .env.example (edit it to override local paths, optional)"
 fi
 
 # --- zshrc aliases ------------------------------------------------------
