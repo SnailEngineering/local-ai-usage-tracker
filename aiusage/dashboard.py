@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import pricing
@@ -147,6 +147,17 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         )
     ]
 
+    # "This month / week / today" cost, bucketed by local calendar day (same
+    # convention as `_local_day` at ingest time) so it matches what the user
+    # actually lived through, not a UTC-shifted view of it.
+    now_local = datetime.now().astimezone()
+    today_str = now_local.strftime("%Y-%m-%d")
+    week_start = (now_local - timedelta(days=now_local.weekday())).strftime("%Y-%m-%d")
+    month_start = now_local.strftime("%Y-%m") + "-01"
+
+    def day_cost(d: str) -> float:
+        return sum(cost_by_day.get(d, {}).values())
+
     totals = {
         "cost_usd": sum(r["cost_usd"] for r in rows if r["priced"]),
         "total_tokens": sum(r["total_tokens"] for r in rows),
@@ -154,6 +165,9 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "output": sum(r["output_tokens"] for r in rows),
         "active_days": len(days),
         "events": sum(r["n_events"] for r in rows),
+        "cost_today": day_cost(today_str),
+        "cost_week": sum(day_cost(d) for d in cost_by_day if d >= week_start),
+        "cost_month": sum(day_cost(d) for d in cost_by_day if d >= month_start),
     }
 
     runs = [dict(r) for r in conn.execute(
@@ -456,6 +470,12 @@ function render() {
       <div class="n">of all tokens</div></div>
     <div class="tile"><div class="k">Active days</div><div class="v">${T.active_days}</div>
       <div class="n">${usd2(T.cost_usd / Math.max(T.active_days, 1))} / day</div></div>
+  </div>
+
+  <div class="tiles">
+    <div class="tile"><div class="k">This month</div><div class="v">${usd2(T.cost_month)}</div></div>
+    <div class="tile"><div class="k">This week</div><div class="v">${usd2(T.cost_week)}</div></div>
+    <div class="tile"><div class="k">Today</div><div class="v">${usd2(T.cost_today)}</div></div>
   </div>
 
   <div class="card">
