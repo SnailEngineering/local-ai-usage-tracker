@@ -11,6 +11,12 @@ MARK_END="# <<< local-ai-usage-tracker <<<"
 echo "local-ai-usage-tracker setup  (repo: $REPO_DIR)"
 echo
 
+# --- data dir -----------------------------------------------------------
+# collect.py creates this itself, but launchd opens its log files at spawn
+# time and will not create intermediate directories -- without this the very
+# first scheduled run silently discards its own log.
+mkdir -p "$REPO_DIR/data"
+
 # --- .env -------------------------------------------------------------
 if [ -f "$REPO_DIR/.env" ]; then
   echo "[.env]      already exists, leaving it alone"
