@@ -117,6 +117,28 @@ def _usage_row(rec: dict, now: str) -> dict | None:
     }
 
 
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int | None]:
+    """Read the incremental offset and archived-file mtime.
+
+    Older databases stored a plain integer offset. Keep accepting that format
+    so an upgrade does not force a full re-ingest.
+    """
+    raw = db.get_state(conn, key)
+    if not raw:
+        return (0, None)
+    try:
+        state = json.loads(raw)
+        if isinstance(state, dict):
+            mtime = state.get("mtime_ns")
+            return (int(state.get("offset", 0)), int(mtime) if mtime is not None else None)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    try:
+        return (int(raw), None)
+    except ValueError:
+        return (0, None)
+
+
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     """Parse archived JSONL from the last read offset of each file."""
     stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0}
@@ -129,12 +151,13 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"cc_offset:{rel}"
-        offset = int(db.get_state(conn, state_key, "0") or 0)
-        size = path.stat().st_size
+        offset, saved_mtime = _read_state(conn, state_key)
+        stat = path.stat()
+        size = stat.st_size
 
-        if size == offset:
+        if size == offset and (saved_mtime is None or saved_mtime == stat.st_mtime_ns):
             continue
-        if size < offset:
+        if size < offset or (size == offset and saved_mtime is not None):
             offset = 0  # file was rewritten; start over, PK dedupe absorbs it
 
         stats["files_read"] += 1
@@ -164,7 +187,8 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                 stats["events"] += db.upsert_usage(conn, batch)
                 batch = []
 
-        db.set_state(conn, state_key, str(offset), now)
+        db.set_state(conn, state_key,
+                     json.dumps({"offset": offset, "mtime_ns": stat.st_mtime_ns}), now)
 
     stats["events"] += db.upsert_usage(conn, batch)
     return stats

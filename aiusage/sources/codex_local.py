@@ -62,15 +62,17 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
     return (copied, total)
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int]:
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None]:
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, 0)
+        return (0, 0, None)
     try:
         d = json.loads(raw)
-        return (int(d.get("offset", 0)), int(d.get("seq", 0)))
-    except (json.JSONDecodeError, ValueError):
-        return (0, 0)
+        mtime = d.get("mtime_ns")
+        return (int(d.get("offset", 0)), int(d.get("seq", 0)),
+                int(mtime) if mtime is not None else None)
+    except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+        return (0, 0, None)
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
@@ -84,12 +86,13 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        offset, seq = _read_state(conn, state_key)
-        size = path.stat().st_size
+        offset, seq, saved_mtime = _read_state(conn, state_key)
+        stat = path.stat()
+        size = stat.st_size
 
-        if size == offset:
+        if size == offset and (saved_mtime is None or saved_mtime == stat.st_mtime_ns):
             continue
-        if size < offset:
+        if size < offset or (size == offset and saved_mtime is not None):
             offset, seq = 0, 0
 
         stats["files_read"] += 1
@@ -192,7 +195,8 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     "ingested_at": now,
                 })
 
-        db.set_state(conn, state_key, json.dumps({"offset": offset, "seq": seq}), now)
+        db.set_state(conn, state_key,
+                     json.dumps({"offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns}), now)
 
         if len(batch) >= 2000:
             stats["events"] += db.upsert_usage(conn, batch)
