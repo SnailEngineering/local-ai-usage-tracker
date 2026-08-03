@@ -1,6 +1,6 @@
 """Token -> USD conversion, applied at render time.
 
-List prices, USD per million tokens (verified 2026-07-27), one table per
+List prices, USD per million tokens (verified 2026-08-02), one table per
 provider. Cache multipliers are relative to the model's base input rate:
 
     5-minute cache write : 1.25x input
