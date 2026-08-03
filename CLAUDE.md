@@ -4,8 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-No dependencies, no build step, no test suite (stdlib Python only — that's a deliberate
-choice, see below).
+No dependencies and no build step — stdlib Python only, a deliberate choice
+(see below). Tests are stdlib `unittest`, so there is no runner to install:
+
+```sh
+python3 -m unittest discover -s tests   # the whole suite
+```
 
 ```sh
 ./collect.py                        # run every configured source, rebuild dashboard.html

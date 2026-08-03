@@ -25,7 +25,24 @@ to configure. Just point it at `~/.claude` and `~/.codex` and run it.
 
 Real output from an actual `dashboard.html` — nothing here is staged. Every
 number, chart, and note (including the "some tokens are unpriced" callout) is
-generated straight from `usage_event`; there's no separate demo mode.
+generated straight from `usage_event`; there's no separate demo mode. The
+screenshot shows the top of the all-time view; below it sit the by-month,
+by-model and top-projects tables.
+
+### Getting around it
+
+- **Tiles** — lifetime totals, then this month / this week / today, so the
+  number you usually want is the one you land on.
+- **Charts** — daily cost stacked by provider, daily tokens stacked by model.
+  Hover for a per-day breakdown. Models past the top 8 fold into "Other".
+- **Drill into a month** — click any row of the **By month** table. You get
+  that month's own charts, a per-model table (where "Other" is itemised), and
+  projects ranked within that month. The month lives in the URL as
+  `#month=2026-07`, so it's bookmarkable and survives a refresh; "All time"
+  in the breadcrumb goes back.
+- **Costs marked `*`** used a model with no rate on file. Those tokens are
+  counted but left out of the dollar figure, never priced at zero. Add the
+  rate to `aiusage/pricing.py` and the whole history re-prices on the next run.
 
 ## Why this exists
 
@@ -37,19 +54,29 @@ instead of scrolling off the back.
 
 ## Setup
 
+Needs Python 3.9 or newer and nothing else. The `/usr/bin/python3` that macOS
+ships is new enough, and is what the launchd agent runs, so there is nothing to
+install — though on a Mac that has never seen Xcode, invoking it once may
+prompt for the Command Line Tools.
+
 ```sh
-git clone <this repo>
+git clone https://github.com/SnailEngineering/local-ai-usage-tracker.git
 cd local-ai-usage-tracker
 ./setup.sh                # .env, shell aliases, optional launchd schedule
+exec zsh                  # pick up the aliases setup.sh just added
 aiusage                   # collect + build dashboard (alias for ./collect.py)
 aiusage-dashboard         # open dashboard.html
 ```
 
 `setup.sh` is idempotent — re-run it anytime. It will:
 
+- create `data/` (the launchd agent writes its logs there and cannot create it itself)
 - copy `.env.example` to `.env` if you don't have one (only needed to override default paths)
 - add `aiusage`, `aiusage-status`, and `aiusage-dashboard` aliases to `~/.zshrc`
 - offer to install the launchd agent that runs the collector twice a day
+
+The aliases are zsh-only. On bash, either add the equivalents to `~/.bashrc`
+yourself or just call `./collect.py` directly.
 
 Prefer to do it by hand instead? `./collect.py` collects and builds the
 dashboard; `./collect.py --status` prints what's in the database and the last
@@ -60,9 +87,12 @@ few runs.
 `dashboard.html` always has a Refresh button and auto-refreshes on an
 interval (60s by default). What that does depends on how you opened it:
 
-- **Plain file** (double-click, or `aiusage-dashboard`): refresh reloads
-  whatever's currently on disk — useful after a manual `./collect.py` run, or
-  just to pick up the next launchd run without reopening the tab.
+- **Plain file** (double-click, or `aiusage-dashboard`): there is no server to
+  ask, so a refresh is a full page reload of whatever `./collect.py` last wrote
+  to disk — useful to pick up a launchd run without reopening the tab. Note
+  that the 60s timer reloads the tab whether or not anything changed; if you
+  keep the dashboard open while reading it, build it with `./collect.py
+  --interval 0` to leave only the Refresh button.
 - **`./collect.py --serve`**: a small local `ThreadingHTTPServer`
   (`aiusage/server.py`) at `http://127.0.0.1:8787/`. Every refresh (auto or
   click) hits `GET /api/data`, which re-runs both collectors and re-renders
@@ -78,11 +108,16 @@ Start it in the foreground; add `--open` to launch it in your browser:
 Or in the background, e.g. to leave running while you work:
 
 ```sh
-./collect.py --serve > data/serve.log 2>&1 &
+mkdir -p data && ./collect.py --serve > data/serve.log 2>&1 &
 ```
 
-`--port` (default `8787`) and `--interval` (seconds, default `60`) override
-the defaults.
+`--port` (default `8787`) and `--interval` (seconds, default `60`; `0` disables
+auto-refresh) override the defaults. `--interval` is baked into the page when
+it is generated, so changing it means rebuilding `dashboard.html`.
+
+The server binds `127.0.0.1` only, so nothing outside your Mac can reach it.
+It does not authenticate requests, though, so treat it like any other localhost
+dev server: run it while you're using it, not permanently.
 
 To stop it: `Ctrl+C` if it's in the foreground; otherwise find and kill the
 process by port —
@@ -101,6 +136,7 @@ SQLite connection, so killing it any time is safe.
 it. To do it manually instead:
 
 ```sh
+mkdir -p data                             # launchd won't create its own log dir
 sed "s#__REPO_DIR__#$(pwd)#g" local.ai-usage-tracker.plist.template \
   > ~/Library/LaunchAgents/local.ai-usage-tracker.plist
 launchctl load ~/Library/LaunchAgents/local.ai-usage-tracker.plist
@@ -118,9 +154,9 @@ at a scheduled time — without it, a closed lid means that run is simply skippe
 "cleanupPeriodDays": 3650
 ```
 
-Already applied. It stops Claude Code deleting the JSONL in the first place.
-The archive is the belt to that suspenders: it keeps working if the setting is
-ever reset by a reinstall.
+Set that and Claude Code stops deleting its JSONL in the first place. The
+archive is the belt to that suspenders: it keeps working if the setting is ever
+reset by a reinstall — and it's what covers you for the days before you set it.
 
 ## Sources
 
@@ -160,6 +196,19 @@ never silently priced at zero; the dashboard says so.
 > the right measure of *what you consumed*, but not an invoice. ChatGPT Plus
 > and Claude Pro/Max don't bill per token at all. Don't reconcile these
 > numbers against a card statement.
+
+## Tests
+
+Stdlib `unittest`, no dependencies, no runner to install:
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+They cover the parts where a silent regression would corrupt the numbers
+rather than crash: incremental re-ingest, same-size archive rewrites, dated
+pricing windows, and the dashboard's unpriced-model and payload-escaping
+handling.
 
 ## Verification
 
@@ -209,9 +258,11 @@ aiusage/
   db.py                                 schema, upserts, run log
   pricing.py                            rate table, cost computation
   dashboard.py                          SQL -> JSON -> static HTML
+  server.py                             optional localhost server for --serve
   sources/
     claude_code_local.py                archive + incremental JSONL parse
     codex_local.py                      same, for Codex rollout files
+tests/                                  stdlib unittest, see Tests above
 data/
   usage.db                              SQLite
   archive/                              mirrored Claude Code JSONL, the durable copy
@@ -227,6 +278,20 @@ project names, token counts, and dollar figures inline). Both are gitignored.
 If you fork or clone this repo, nothing you generate by running the collector
 gets committed — only the code does. Don't remove those `.gitignore` entries
 without knowing what you're exposing.
+
+Worth knowing: the archive holds **full session transcripts**, not just token
+counts — everything you and the agent said. That is the price of being able to
+re-price and re-parse history later, but it means `data/archive*/` deserves the
+same care as the source directories it mirrors.
+
+## Disk
+
+The archive only ever grows — that's the point, and nothing prunes it. Expect
+roughly a couple of GB per year at steady daily use (Codex rollout files
+dominate; single sessions can reach 100MB+). `du -sh data/` tells you where you
+are. If you ever need the space back, deleting old archived JSONL is safe:
+everything already ingested stays in `usage.db`, and the byte-offset bookkeeping
+in `ingest_state` simply stops matching files that are gone.
 
 ## Adding Ollama later
 
