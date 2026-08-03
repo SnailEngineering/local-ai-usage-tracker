@@ -97,8 +97,12 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
             # A resumed read starts mid-file, so re-scan the head cheaply to
             # recover the model/cwd context that precedes this offset.
             if offset:
-                for line in fh:
-                    if fh.tell() > offset:
+                # Use ``readline`` rather than the file iterator: Python
+                # disables ``tell`` after ``next`` on a text stream, which
+                # would otherwise make every resumed ingest fail here.
+                while fh.tell() < offset:
+                    line = fh.readline()
+                    if not line:
                         break
                     try:
                         d = json.loads(line)
