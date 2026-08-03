@@ -147,7 +147,7 @@ def build_payload(conn: sqlite3.Connection) -> dict:
     def _proj_entry(store: dict, d: dict) -> dict:
         return store.setdefault(d["project"], {
             "project": d["project"], "cost_usd": 0.0, "total_tokens": 0,
-            "last_day": d["last_day"], "messages": 0,
+            "last_day": d["last_day"], "messages": 0, "unpriced": False,
         })
 
     for r in conn.execute("""
@@ -164,13 +164,18 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         d = dict(r)
         d["day"] = d["last_day"]
         d["model"] = pricing.normalize_model(d["model"])
-        c = pricing.cost_usd(d) or 0.0
+        # None means "no rate on file" and must not collapse to zero -- flag the
+        # project instead, the same way the month and model tables do.
+        c = pricing.cost_usd(d)
         tokens = (
             d["input_tokens"] + d["output_tokens"] + d["cache_write_5m_tokens"]
             + d["cache_write_1h_tokens"] + d["cache_read_tokens"]
         )
         for e in (_proj_entry(proj, d), _proj_entry(month_proj[d["month"]], d)):
-            e["cost_usd"] += c
+            if c is None:
+                e["unpriced"] = True
+            else:
+                e["cost_usd"] += c
             e["total_tokens"] += tokens
             e["messages"] += d["n"]
             e["last_day"] = max(e["last_day"], d["last_day"])
@@ -241,8 +246,13 @@ def build_payload(conn: sqlite3.Connection) -> dict:
 def build(conn: sqlite3.Connection, out_path: Path, refresh_seconds: int = 60) -> Path:
     payload = build_payload(conn)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # The payload is spliced into an inline <script>, where the HTML parser wins
+    # over the JS one: a project directory literally named `</script>...` would
+    # otherwise close the block early and inject live markup. Escaping `<` keeps
+    # the JSON valid and identical once parsed.
+    data = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
     html = (TEMPLATE
-            .replace("__DATA__", json.dumps(payload, separators=(",", ":")))
+            .replace("__DATA__", data)
             .replace("__REFRESH_MS__", str(refresh_seconds * 1000)))
     out_path.write_text(html, encoding="utf-8")
     return out_path
@@ -614,7 +624,8 @@ function renderAll(app) {
         <thead><tr><th>Project</th><th>Messages</th><th>Tokens</th><th>Last used</th><th>Cost</th></tr></thead>
         <tbody>${DATA.projects.map(p => `<tr><td>${esc(p.project)}</td>
           <td>${num(p.messages)}</td><td>${tok(p.total_tokens)}</td>
-          <td>${p.last_day}</td><td class="num-strong">${usd2(p.cost_usd)}</td></tr>`).join('')}</tbody>
+          <td>${p.last_day}</td>
+          <td class="num-strong">${usd2(p.cost_usd)}${p.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
       </table></div></div>`;
   }
 
@@ -770,7 +781,8 @@ function renderMonth(app, month) {
         <thead><tr><th>Project</th><th>Messages</th><th>Tokens</th><th>Last used</th><th>Cost</th></tr></thead>
         <tbody>${projects.map(p => `<tr><td>${esc(p.project)}</td>
           <td>${num(p.messages)}</td><td>${tok(p.total_tokens)}</td>
-          <td>${p.last_day}</td><td class="num-strong">${usd2(p.cost_usd)}</td></tr>`).join('')}</tbody>
+          <td>${p.last_day}</td>
+          <td class="num-strong">${usd2(p.cost_usd)}${p.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
       </table></div></div>`;
   }
 

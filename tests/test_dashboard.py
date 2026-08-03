@@ -1,0 +1,62 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from aiusage import dashboard, db
+
+
+def _event(**over) -> dict:
+    row = {
+        "id": "e1", "source": "claude_code_local", "provider": "anthropic",
+        "ts": "2026-08-01T10:00:00Z", "day": "2026-08-01", "model": "claude-opus-5",
+        "input_tokens": 100, "output_tokens": 50, "cache_write_5m_tokens": 0,
+        "cache_write_1h_tokens": 0, "cache_read_tokens": 0, "reasoning_tokens": 0,
+        "requests": 1, "project": "proj", "git_branch": None, "session_id": "s",
+        "service_tier": None, "ingested_at": "2026-08-01T10:00:00Z",
+    }
+    row.update(over)
+    return row
+
+
+class DashboardTests(unittest.TestCase):
+    def _conn(self, tmp: str, rows: list[dict]):
+        conn = db.connect(Path(tmp) / "t.db")
+        db.upsert_usage(conn, rows)
+        conn.commit()
+        return conn
+
+    def test_unpriced_model_is_flagged_on_a_project_not_costed_at_zero(self) -> None:
+        """A model with no rate must never look like a free project."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                _event(id="a", model="claude-opus-5", project="priced"),
+                _event(id="b", model="totally-unknown-model", project="mystery"),
+            ])
+            by_name = {p["project"]: p for p in dashboard.build_payload(conn)["projects"]}
+
+            self.assertFalse(by_name["priced"]["unpriced"])
+            self.assertGreater(by_name["priced"]["cost_usd"], 0)
+
+            self.assertTrue(by_name["mystery"]["unpriced"])
+            self.assertEqual(by_name["mystery"]["cost_usd"], 0.0)
+            # The tokens still have to be counted even though the dollars aren't.
+            self.assertEqual(by_name["mystery"]["total_tokens"], 150)
+
+    def test_project_name_cannot_break_out_of_the_script_block(self) -> None:
+        """The payload is inlined into <script>, where the HTML parser wins."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [_event(project="</script><img src=x onerror=alert(1)>")])
+            out = Path(tmp) / "dashboard.html"
+            dashboard.build(conn, out)
+            html = out.read_text(encoding="utf-8")
+
+            # Exactly one closer: the template's own, after the payload.
+            self.assertEqual(html.count("</script>"), 1)
+            self.assertNotIn("<img src=x", html)
+            self.assertIn("\\u003c/script", html)
+
+
+if __name__ == "__main__":
+    unittest.main()
