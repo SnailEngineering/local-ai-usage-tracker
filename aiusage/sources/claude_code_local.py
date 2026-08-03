@@ -51,9 +51,9 @@ def archive(projects_dir: Path, archive_dir: Path) -> tuple[int, int]:
 
         if dst.exists():
             d = dst.stat()
-            # Append-only files: size is the reliable change signal. mtime alone
-            # is not, because copy2 replicates it.
-            if d.st_size == s.st_size:
+            # `copy2` preserves mtime, so size and mtime together identify an
+            # unchanged append-only file while still catching a same-size rewrite.
+            if d.st_size == s.st_size and d.st_mtime_ns == s.st_mtime_ns:
                 continue
 
         dst.parent.mkdir(parents=True, exist_ok=True)

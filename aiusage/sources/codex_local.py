@@ -49,8 +49,12 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
             s = src.stat()
         except OSError:
             continue
-        if dst.exists() and dst.stat().st_size == s.st_size:
-            continue
+        if dst.exists():
+            d = dst.stat()
+            # `copy2` preserves mtime; combine it with size so a same-size
+            # rewrite is not mistaken for an already archived file.
+            if d.st_size == s.st_size and d.st_mtime_ns == s.st_mtime_ns:
+                continue
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         copied += 1
