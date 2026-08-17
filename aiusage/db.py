@@ -68,9 +68,21 @@ CREATE TABLE IF NOT EXISTS run_log (
 """
 
 
+# Three processes legitimately write this database: the launchd agent on its
+# schedule, a `./collect.py` you run by hand, and a `--serve` instance
+# re-collecting per request. WAL allows a single writer, so the losers of a
+# race wait on the lock. sqlite3's 5s default is short next to how long a
+# writer can legitimately hold it -- a first run, or any full re-ingest after
+# the archive grows, stays in one transaction for seconds. Losing that race
+# raises "database is locked", which run_sources logs as an error and skips,
+# dropping that run's usage until the next one.
+BUSY_TIMEOUT_S = 30.0
+
+
 def connect(path: Path, check_same_thread: bool = True) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
+    conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S,
+                           check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     return conn
