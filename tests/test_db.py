@@ -44,5 +44,37 @@ class BusyTimeoutTests(unittest.TestCase):
                 other.execute("SELECT COUNT(*) c FROM ingest_state").fetchone()["c"], 2)
 
 
+class MigrationTests(unittest.TestCase):
+    def test_a_fresh_database_is_stamped_current(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "usage.db")
+            self.addCleanup(conn.close)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                             db.SCHEMA_VERSION)
+
+    def test_migrations_run_once_and_are_idempotent(self) -> None:
+        """A database from before versioning reports user_version 0, so every
+        step has to run against it -- and must not run a second time."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "usage.db"
+            conn = db.connect(path)
+            self.addCleanup(conn.close)
+
+            conn.execute("PRAGMA user_version = 0")   # pretend it predates this
+            conn.commit()
+            self.assertEqual(db.migrate(conn), db.SCHEMA_VERSION)
+            self.assertEqual(db.migrate(conn), 0)     # already current
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                             db.SCHEMA_VERSION)
+
+    def test_every_version_up_to_current_has_a_migration_entry(self) -> None:
+        """Guards the bump-without-a-step mistake: raising SCHEMA_VERSION and
+        forgetting MIGRATIONS leaves existing databases quietly unchanged."""
+        for version in range(2, db.SCHEMA_VERSION + 1):
+            self.assertIn(version, db.MIGRATIONS,
+                          f"SCHEMA_VERSION is {db.SCHEMA_VERSION} but no "
+                          f"MIGRATIONS entry exists for version {version}")
+
+
 if __name__ == "__main__":
     unittest.main()

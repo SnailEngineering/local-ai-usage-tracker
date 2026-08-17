@@ -79,12 +79,43 @@ CREATE TABLE IF NOT EXISTS run_log (
 BUSY_TIMEOUT_S = 30.0
 
 
+# Bump when the schema changes, and add the matching step to MIGRATIONS.
+# `CREATE TABLE IF NOT EXISTS` builds a correct database from nothing but is a
+# no-op against one that already exists, so without this a new column would
+# silently never reach any installation that has already run -- and the failure
+# would surface much later, as an OperationalError mid-collect.
+SCHEMA_VERSION = 1
+
+# version -> list of statements taking the database from (version - 1) to it.
+# Each entry runs exactly once, in order, inside one transaction.
+MIGRATIONS: dict[int, list[str]] = {}
+
+
+def migrate(conn: sqlite3.Connection) -> int:
+    """Apply any migrations this database has not seen. Returns the number
+    applied. Safe to call on every connect: it is a no-op once current."""
+    current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current >= SCHEMA_VERSION:
+        return 0
+
+    applied = 0
+    for version in range(current + 1, SCHEMA_VERSION + 1):
+        for statement in MIGRATIONS.get(version, []):
+            conn.execute(statement)
+        applied += 1
+    # PRAGMA does not take a bound parameter, and SCHEMA_VERSION is ours.
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.commit()
+    return applied
+
+
 def connect(path: Path, check_same_thread: bool = True) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S,
                            check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    migrate(conn)
     return conn
 
 
