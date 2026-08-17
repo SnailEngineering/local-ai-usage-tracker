@@ -66,8 +66,8 @@ def _expand(value: str) -> Path:
 
 
 def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
-                 only: str | None = None, quiet: bool = False,
-                 triggered_by: str = "scheduled") -> int:
+                 codex_archive_dir: Path, only: str | None = None,
+                 quiet: bool = False, triggered_by: str = "scheduled") -> int:
     """Run every enabled source once, logging each to run_log. Returns the
     number of failures; one source raising never stops the other."""
     failures = 0
@@ -104,7 +104,7 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
           "--only excluded it")
 
     stage("codex_local", only in (None, "codex"),
-          lambda: codex_local.run(conn, codex_dir, archive_dir.parent / "archive-codex"),
+          lambda: codex_local.run(conn, codex_dir, codex_archive_dir),
           "--only excluded it")
 
     return failures
@@ -137,6 +137,11 @@ def main() -> int:
 
     db_path = _expand(os.environ.get("AIU_DB", str(ROOT / "data" / "usage.db")))
     archive_dir = _expand(os.environ.get("AIU_ARCHIVE", str(ROOT / "data" / "archive")))
+    # Defaults beside the Claude archive, but settable on its own: the Codex
+    # rollouts are much the larger half, so they are the ones you would want to
+    # put on another volume.
+    codex_archive_dir = _expand(os.environ.get(
+        "AIU_ARCHIVE_CODEX", str(archive_dir.parent / "archive-codex")))
     claude_dir = _expand(os.environ.get("AIU_CLAUDE_DIR", "~/.claude"))
     codex_dir = _expand(os.environ.get("AIU_CODEX_DIR", "~/.codex"))
     out_html = _expand(os.environ.get("AIU_DASHBOARD", str(ROOT / "dashboard.html")))
@@ -150,10 +155,11 @@ def main() -> int:
         return print_status(conn, db_path)
 
     if args.prune is not None:
-        return run_prune(conn, archive_dir, args.prune, args.yes)
+        return run_prune(conn, archive_dir, codex_archive_dir, args.prune, args.yes)
 
     print(f"local-ai-usage-tracker  db={db_path}")
-    failures = run_sources(conn, claude_dir, codex_dir, archive_dir, args.only)
+    failures = run_sources(conn, claude_dir, codex_dir, archive_dir,
+                           codex_archive_dir, args.only)
 
     from aiusage import dashboard
     if not args.no_dashboard or args.serve:
@@ -163,7 +169,8 @@ def main() -> int:
     if args.serve:
         from aiusage import server
         collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
-                                          args.only, quiet=True, triggered_by="serve")
+                                          codex_archive_dir, args.only, quiet=True,
+                                          triggered_by="serve")
         httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port)
         url = f"http://127.0.0.1:{args.port}/"
         print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "
@@ -187,7 +194,8 @@ def main() -> int:
     return 1 if failures else 0
 
 
-def run_prune(conn, archive_dir: Path, older_than_days: float, confirmed: bool) -> int:
+def run_prune(conn, archive_dir: Path, codex_archive_dir: Path,
+              older_than_days: float, confirmed: bool) -> int:
     """List, or with --yes delete, archived files that are old and fully read.
 
     Listing is the default deliberately: this removes full session transcripts,
@@ -196,13 +204,13 @@ def run_prune(conn, archive_dir: Path, older_than_days: float, confirmed: bool) 
     """
     from aiusage import prune as pruner
 
-    archives = {"claude_code_local": archive_dir,
-                "codex_local": archive_dir.parent / "archive-codex"}
+    archives = {"claude_code_local": archive_dir, "codex_local": codex_archive_dir}
     candidates = pruner.survey(conn, archives, older_than_days)
     prunable = [c for c in candidates if c.prunable]
     total = sum(c.size for c in prunable)
 
-    print(f"archive  : {archive_dir.parent}")
+    print(f"archives : {archive_dir}")
+    print(f"           {codex_archive_dir}")
     print(f"scanned  : {len(candidates)} files, "
           f"{pruner.human_bytes(sum(c.size for c in candidates))}")
 
