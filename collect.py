@@ -125,6 +125,11 @@ def main() -> int:
                          "re-collect on every page refresh instead of exiting")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT,
                     help=f"port for --serve (default {DEFAULT_PORT})")
+    ap.add_argument("--prune", type=float, metavar="DAYS",
+                    help="list archived session files older than DAYS that have "
+                         "been fully ingested; add --yes to delete them")
+    ap.add_argument("--yes", action="store_true",
+                    help="with --prune, actually delete instead of listing")
     ap.add_argument("--interval", type=int, default=60,
                     help="seconds between auto-refreshes while the dashboard tab "
                          "is left open (default 60)")
@@ -143,6 +148,9 @@ def main() -> int:
 
     if args.status:
         return print_status(conn, db_path)
+
+    if args.prune is not None:
+        return run_prune(conn, archive_dir, args.prune, args.yes)
 
     print(f"local-ai-usage-tracker  db={db_path}")
     failures = run_sources(conn, claude_dir, codex_dir, archive_dir, args.only)
@@ -177,6 +185,57 @@ def main() -> int:
     conn.commit()
     conn.close()
     return 1 if failures else 0
+
+
+def run_prune(conn, archive_dir: Path, older_than_days: float, confirmed: bool) -> int:
+    """List, or with --yes delete, archived files that are old and fully read.
+
+    Listing is the default deliberately: this removes full session transcripts,
+    and the events themselves are already in the database, so there is no undo
+    beyond whatever the source tools still hold.
+    """
+    from aiusage import prune as pruner
+
+    archives = {"claude_code_local": archive_dir,
+                "codex_local": archive_dir.parent / "archive-codex"}
+    candidates = pruner.survey(conn, archives, older_than_days)
+    prunable = [c for c in candidates if c.prunable]
+    total = sum(c.size for c in prunable)
+
+    print(f"archive  : {archive_dir.parent}")
+    print(f"scanned  : {len(candidates)} files, "
+          f"{pruner.human_bytes(sum(c.size for c in candidates))}")
+
+    kept: dict[str, list] = {}
+    for c in candidates:
+        if not c.prunable:
+            kept.setdefault(c.reason, []).append(c)
+    for reason, group in sorted(kept.items(), key=lambda kv: -len(kv[1])):
+        print(f"  kept   : {len(group):>4} {reason} "
+              f"({pruner.human_bytes(sum(c.size for c in group))})")
+
+    if not prunable:
+        print(f"\nNothing older than {older_than_days:g} days is fully ingested.")
+        return 0
+
+    print(f"\n{len(prunable)} file(s), {pruner.human_bytes(total)}, "
+          f"older than {older_than_days:g} days and fully ingested:")
+    for c in prunable[:20]:
+        print(f"  {c.age_days:>6.0f}d  {pruner.human_bytes(c.size):>10}  {c.path.name}")
+    if len(prunable) > 20:
+        print(f"  ... and {len(prunable) - 20} more")
+
+    if not confirmed:
+        print("\nNothing deleted. These are full session transcripts and the "
+              "delete cannot be undone;")
+        print(f"the token counts are already in the database. Re-run with --yes "
+              f"to remove them:")
+        print(f"  ./collect.py --prune {older_than_days:g} --yes")
+        return 0
+
+    removed, reclaimed = pruner.prune(conn, candidates)
+    print(f"\nRemoved {removed} file(s), reclaimed {pruner.human_bytes(reclaimed)}.")
+    return 0
 
 
 def print_status(conn, db_path: Path) -> int:
