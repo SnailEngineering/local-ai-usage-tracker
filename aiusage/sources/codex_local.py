@@ -135,19 +135,19 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         model = "unknown"
         cwd = None
 
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
+        # Bytes, not text -- see the matching comment in claude_code_local.ingest:
+        # decoding first lets `offset` drift away from the real byte position on
+        # CRLF or undecodable input, which desyncs the file for good.
+        with path.open("rb") as fh:
             # A resumed read starts mid-file, so re-scan the head cheaply to
             # recover the model/cwd context that precedes this offset.
             if offset:
-                # Use ``readline`` rather than the file iterator: Python
-                # disables ``tell`` after ``next`` on a text stream, which
-                # would otherwise make every resumed ingest fail here.
                 while fh.tell() < offset:
                     line = fh.readline()
                     if not line:
                         break
                     try:
-                        d = json.loads(line)
+                        d = json.loads(line.decode("utf-8", "replace"))
                     except json.JSONDecodeError:
                         continue
                     p = d.get("payload") or {}
@@ -157,15 +157,15 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                         cwd = p["cwd"]
                 fh.seek(offset)
 
-            for line in fh:
-                if not line.endswith("\n"):
+            for raw in fh:
+                if not raw.endswith(b"\n"):
                     break  # session still being written
-                offset += len(line.encode("utf-8"))
-                line = line.strip()
-                if not line:
+                offset += len(raw)
+                raw = raw.strip()
+                if not raw:
                     continue
                 try:
-                    rec = json.loads(line)
+                    rec = json.loads(raw.decode("utf-8", "replace"))
                 except json.JSONDecodeError:
                     stats["bad_lines"] += 1
                     continue
@@ -260,16 +260,6 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
         "service_tier": (p.get("rate_limits") or {}).get("plan_type"),
         "ingested_at": now,
     }
-
-
-def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
-    copied, total = archive(codex_dir / "sessions", archive_dir)
-    stats = ingest(conn, archive_dir, now)
-    stats["archived"] = copied
-    stats["source_files"] = total
-    return stats
-
 
 
 def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:

@@ -161,19 +161,25 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
             offset = 0  # file was rewritten; start over, PK dedupe absorbs it
 
         stats["files_read"] += 1
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
+        # Read bytes, not text. `offset` is a byte position, and decoding first
+        # breaks that correspondence two ways: universal newlines collapse
+        # "\r\n" to one character, and errors="replace" turns an undecodable
+        # byte into a 3-byte U+FFFD. Either makes len(line.encode()) disagree
+        # with the bytes consumed, so the stored offset drifts and every later
+        # read of this file starts mid-line -- permanently, with no resync.
+        with path.open("rb") as fh:
             fh.seek(offset)
-            for line in fh:
-                if not line.endswith("\n"):
+            for raw in fh:
+                if not raw.endswith(b"\n"):
                     # Partial trailing line -- a session still being written.
                     # Leave the offset short of it so we re-read it next run.
                     break
-                offset += len(line.encode("utf-8"))
-                line = line.strip()
-                if not line:
+                offset += len(raw)
+                raw = raw.strip()
+                if not raw:
                     continue
                 try:
-                    rec = json.loads(line)
+                    rec = json.loads(raw.decode("utf-8", "replace"))
                 except json.JSONDecodeError:
                     stats["bad_lines"] += 1
                     continue
