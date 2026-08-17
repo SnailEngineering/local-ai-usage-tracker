@@ -108,6 +108,58 @@ class ClaudeIngestTests(unittest.TestCase):
                         "SELECT value FROM ingest_state").fetchone()["value"])["offset"]
                 self.assertEqual(offset, path.stat().st_size)
 
+    def test_flat_cache_creation_total_falls_back_to_the_5m_tier(self) -> None:
+        """Newer records split cache writes by TTL; older ones only carry the
+        flat total. The fallback has to attribute it, or a 1.25x-priced chunk
+        of every old record silently disappears from the cost."""
+        nested = _assistant(1, 10)
+        nested["message"]["usage"].update({
+            "cache_creation_input_tokens": 900,
+            "cache_creation": {"ephemeral_5m_input_tokens": 300,
+                               "ephemeral_1h_input_tokens": 600},
+        })
+        flat = _assistant(2, 10)
+        flat["message"]["usage"]["cache_creation_input_tokens"] = 900
+
+        conn, archive = self._ingest(
+            b"".join(json.dumps(r).encode() + b"\n" for r in (nested, flat)))
+        cc.ingest(conn, archive, "now")
+
+        rows = conn.execute(
+            "SELECT cache_write_5m_tokens w5, cache_write_1h_tokens w1h "
+            "FROM usage_event ORDER BY ts").fetchall()
+        self.assertEqual([(r["w5"], r["w1h"]) for r in rows],
+                         [(300, 600), (900, 0)])
+
+    def test_synthetic_and_usageless_records_are_skipped(self) -> None:
+        """Claude Code writes placeholder assistant turns for local no-ops.
+        Counting them would inflate the message count with turns that never
+        reached the API."""
+        synthetic = _assistant(1, 10)
+        synthetic["message"]["model"] = "<synthetic>"
+        usageless = _assistant(2, 10)
+        del usageless["message"]["usage"]
+        user_turn = {"type": "user", "timestamp": "2026-08-02T12:00:03Z"}
+
+        conn, archive = self._ingest(
+            b"".join(json.dumps(r).encode() + b"\n"
+                     for r in (synthetic, usageless, user_turn, _assistant(4, 7))))
+        cc.ingest(conn, archive, "now")
+
+        rows = conn.execute("SELECT input_tokens FROM usage_event").fetchall()
+        self.assertEqual([r["input_tokens"] for r in rows], [7])
+
+    def test_a_legacy_integer_offset_is_still_accepted(self) -> None:
+        """Databases written before the state became JSON hold a bare integer.
+        Rejecting it would silently re-ingest every archived file from zero."""
+        conn, archive = self._ingest(
+            json.dumps(_assistant(1, 5)).encode() + b"\n")
+        db.set_state(conn, "cc_offset:s.jsonl", "12", "now")
+        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (12, None))
+
+        db.set_state(conn, "cc_offset:s.jsonl", "not-a-number", "now")
+        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (0, None))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,7 +158,17 @@ USAGE_COLUMNS = (
 
 def upsert_usage(conn: sqlite3.Connection, rows: list[dict]) -> int:
     """INSERT OR REPLACE: rows are immutable, but re-reading a truncated or
-    rewritten file is safe -- the dedupe key makes repeats a no-op."""
+    rewritten file is safe -- the dedupe key makes repeats a no-op.
+
+    One ordering dependency worth knowing about, because nothing enforces it.
+    Claude Code writes one record per content block of a streamed message, all
+    sharing (message id, requestId), and the earlier ones carry a *partial*
+    output_tokens while the last carries the complete count -- roughly 5% of
+    the author's records. "Last write wins" therefore lands on the right number
+    only because `rows` is in file order and executemany preserves it. Feed
+    these rows in out of order and output tokens silently under-count. See
+    tests/test_claude_code_local.py for the case that pins this.
+    """
     if not rows:
         return 0
     placeholders = ", ".join("?" for _ in USAGE_COLUMNS)
