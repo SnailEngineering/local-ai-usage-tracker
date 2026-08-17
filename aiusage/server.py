@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
@@ -37,11 +38,14 @@ def make_server(
         def log_message(self, fmt, *args):  # noqa: A002 - stdlib signature
             pass
 
-        def _send_json(self, payload: dict) -> None:
+        def _send_json(self, payload: dict, status: int = 200) -> None:
             body = json.dumps(payload).encode()
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            # The page polls this on a timer; a cached reply would show stale
+            # numbers that look like a collector that has stopped working.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -54,16 +58,27 @@ def make_server(
             self.wfile.write(body)
 
         def do_GET(self):  # noqa: N802 - stdlib signature
-            if self.path == "/api/data":
-                with lock:
-                    collect_fn()
-                    payload = dashboard.build_payload(conn)
-                self._send_json(payload)
-                return
-            if self.path in ("/", "/dashboard.html"):
-                with lock:
-                    self._send_file(dashboard_path, "text/html; charset=utf-8")
-                return
-            self.send_error(404)
+            # Every branch must answer. An exception escaping here closes the
+            # socket with no response, which the page cannot tell apart from
+            # "no server on this port" -- so its fallback fires and reloads the
+            # tab, every refresh interval, for as long as the fault lasts.
+            try:
+                if self.path == "/api/data":
+                    with lock:
+                        collect_fn()
+                        payload = dashboard.build_payload(conn)
+                    self._send_json(payload)
+                    return
+                if self.path in ("/", "/dashboard.html"):
+                    with lock:
+                        self._send_file(dashboard_path, "text/html; charset=utf-8")
+                    return
+                self.send_error(404)
+            except Exception as e:
+                traceback.print_exc()
+                try:
+                    self._send_json({"error": f"{type(e).__name__}: {e}"}, status=500)
+                except Exception:  # client hung up mid-write; nothing to say
+                    pass
 
     return ThreadingHTTPServer((host, port), Handler)

@@ -832,15 +832,41 @@ async function refreshData() {
   if (btn) { btn.disabled = true; btn.textContent = 'Refreshing…'; }
   try {
     const res = await fetch('/api/data', { cache: 'no-store' });
+    if (res.status >= 500) {
+      // A server that answered and failed. Reloading would just re-run the
+      // same broken collection, so keep the numbers on screen and say so.
+      const body = await res.json().catch(() => ({}));
+      showError(body.error || 'the collector failed on the server');
+      return;
+    }
     if (!res.ok) throw new Error('bad response');
     Object.assign(DATA, await res.json());
     render();
+    showError(null);
   } catch (err) {
+    // No answer at all: either this is a plain file:// page with no server to
+    // ask, or the server went away. Either way the only newer data available
+    // is whatever the last ./collect.py wrote to disk.
     location.reload();
     return;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
   }
+}
+
+function showError(msg) {
+  let el = document.getElementById('refresh-error');
+  if (!msg) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'refresh-error';
+    el.className = 'note';
+    el.style.borderLeftColor = 'var(--s8)';
+    el.style.margin = '0 0 18px';
+    document.getElementById('app').prepend(el);
+  }
+  el.textContent = 'Last refresh failed: ' + msg
+    + ' \u2014 the figures below are from ' + DATA.generated_at + '.';
 }
 
 document.getElementById('refresh-btn').addEventListener('click', refreshData);
