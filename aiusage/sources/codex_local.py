@@ -18,6 +18,7 @@ Two details that matter:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -62,21 +63,39 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
     return (copied, total)
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None]:
+# Bytes of each file hashed to notice a rewrite. Size and mtime miss the case
+# that matters most: a rewrite that also *grows* the file looks exactly like an
+# append, so the changed prefix is never re-read.
+HEAD_BYTES = 4096
+
+
+def _head_hash(path: Path, n: int) -> tuple[str, int]:
+    """Hash the first `n` bytes. Returns (digest, bytes_actually_read), so a
+    file shorter than `n` records how much it covered rather than a digest that
+    would change on the next append."""
+    with path.open("rb") as fh:
+        head = fh.read(n)
+    return (hashlib.sha256(head).hexdigest()[:16], len(head))
+
+
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None, str | None, int]:
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, 0, None)
+        return (0, 0, None, None, 0)
     try:
         d = json.loads(raw)
         mtime = d.get("mtime_ns")
+        head = d.get("head")
         return (int(d.get("offset", 0)), int(d.get("seq", 0)),
-                int(mtime) if mtime is not None else None)
+                int(mtime) if mtime is not None else None,
+                str(head) if head else None, int(d.get("head_len", 0)))
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
-        return (0, 0, None)
+        return (0, 0, None, None, 0)
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
-    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0}
+    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0,
+             "bad_records": 0, "rewritten": 0}
     if not archive_dir.is_dir():
         return stats
 
@@ -86,17 +105,33 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        offset, seq, saved_mtime = _read_state(conn, state_key)
+        offset, seq, saved_mtime, saved_head, saved_head_len = _read_state(conn, state_key)
         stat = path.stat()
         size = stat.st_size
 
         if size == offset and (saved_mtime is None or saved_mtime == stat.st_mtime_ns):
             continue
-        if size < offset or (size == offset and saved_mtime is not None):
+
+        session_id = path.stem
+        # Compare the same number of bytes the previous run hashed, so a plain
+        # append (which leaves the prefix untouched) never looks like a rewrite.
+        rewritten = size < offset or (size == offset and saved_mtime is not None)
+        if not rewritten and saved_head is not None:
+            rewritten = _head_hash(path, saved_head_len)[0] != saved_head
+
+        if rewritten:
+            # Codex ids are positional (`codex:<session>:<seq>`), so replaying a
+            # rewritten file with INSERT OR REPLACE is not enough: any event that
+            # disappeared keeps its old row forever, inventing usage that no
+            # longer exists on disk. Clear the session first and rebuild it. The
+            # delete and the replay share run_sources' transaction, so a failure
+            # mid-file rolls both back rather than leaving a half-empty session.
+            conn.execute("DELETE FROM usage_event WHERE source = ? AND session_id = ?",
+                         (SOURCE, session_id))
             offset, seq = 0, 0
+            stats["rewritten"] += 1
 
         stats["files_read"] += 1
-        session_id = path.stem
         model = "unknown"
         cwd = None
 
@@ -168,8 +203,11 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     continue
                 batch.append(row)
 
-        db.set_state(conn, state_key,
-                     json.dumps({"offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns}), now)
+        head, head_len = _head_hash(path, HEAD_BYTES)
+        db.set_state(conn, state_key, json.dumps({
+            "offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns,
+            "head": head, "head_len": head_len,
+        }), now)
 
         if len(batch) >= 2000:
             stats["events"] += db.upsert_usage(conn, batch)

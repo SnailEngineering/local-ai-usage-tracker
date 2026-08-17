@@ -102,11 +102,52 @@ class CodexLocalIngestTests(unittest.TestCase):
             row = conn.execute("SELECT input_tokens FROM usage_event").fetchone()
             self.assertEqual(row["input_tokens"], 7)
 
+    def _write(self, path: Path, n_events: int, tokens: int) -> None:
+        recs = [{"timestamp": "2026-08-02T12:00:00Z", "type": "turn_context",
+                 "payload": {"model": "gpt-5.6-terra"}}]
+        recs += [{"timestamp": f"2026-08-02T12:00:{i + 1:02d}Z", "type": "event_msg",
+                  "payload": {"type": "token_count", "info": {"last_token_usage": {
+                      "total_tokens": tokens, "input_tokens": tokens}}}}
+                 for i in range(n_events)]
+        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+
     def _totals(self, conn) -> tuple[int, int]:
         r = conn.execute(
             "SELECT COUNT(*) n, COALESCE(SUM(input_tokens), 0) t FROM usage_event"
         ).fetchone()
         return (r["n"], r["t"])
+
+    def test_rewritten_session_does_not_leave_orphan_events(self) -> None:
+        """Codex ids are positional (`codex:<session>:<seq>`), so replaying a
+        rewritten file through INSERT OR REPLACE is not enough on its own: any
+        event that vanished from the file keeps its row and invents usage. A
+        rewrite that *grows* the file is the nastier half -- it is byte-identical
+        in shape to an append, so only the head hash catches it.
+        """
+        cases = [
+            # (label, first, second, expected rows, expected tokens)
+            ("shrink", (2, 5), (1, 5), 1, 5),
+            ("grow-rewrite", (2, 5), (3, 9), 3, 27),
+            ("plain append", (2, 5), (3, 5), 3, 15),
+        ]
+        for label, first, second, want_rows, want_tokens in cases:
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                archive = Path(tmp) / "archive"
+                archive.mkdir()
+                session = archive / "sess.jsonl"
+
+                self._write(session, *first)
+                conn = db.connect(Path(tmp) / "usage.db")
+                self.addCleanup(conn.close)
+                codex_local.ingest(conn, archive, "now")
+
+                mtime = session.stat().st_mtime_ns
+                self._write(session, *second)
+                os.utime(session, ns=(mtime, mtime + 1_000_000))
+                stats = codex_local.ingest(conn, archive, "now")
+
+                self.assertEqual(self._totals(conn), (want_rows, want_tokens))
+                self.assertEqual(stats["rewritten"], 0 if label == "plain append" else 1)
 
     def test_one_malformed_record_does_not_stall_the_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
