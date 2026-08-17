@@ -14,10 +14,11 @@ from aiusage import db, server
 
 
 class ServerTests(unittest.TestCase):
-    def _serve(self, collect_fn, dashboard_path: Path):
+    def _serve(self, collect_fn, dashboard_path: Path, min_interval: float = 0.0):
         conn = db.connect(Path(tempfile.mkdtemp()) / "usage.db", check_same_thread=False)
         self.addCleanup(conn.close)
-        httpd = server.make_server(conn, collect_fn, dashboard_path, "127.0.0.1", 0)
+        httpd = server.make_server(conn, collect_fn, dashboard_path, "127.0.0.1", 0,
+                                   min_collect_interval=min_interval)
         self.addCleanup(httpd.server_close)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         self.addCleanup(httpd.shutdown)
@@ -73,6 +74,28 @@ class ServerTests(unittest.TestCase):
         """_send_file reads from disk; the file can be deleted underneath it."""
         base = self._serve(lambda: None, Path(tempfile.mkdtemp()) / "gone.html")
         self._expect_error(base + "/", 500)
+
+    def test_rapid_refreshes_coalesce_into_one_collection(self) -> None:
+        """Each open tab polls on its own timer, so without a floor N tabs mean
+        N full collections per interval -- every one of them walking the whole
+        archive while holding the lock the others are queued on."""
+        calls = []
+        base = self._serve(lambda: calls.append(1), self._dashboard(),
+                           min_interval=30.0)
+
+        for _ in range(5):
+            with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+                self.assertEqual(res.status, 200)
+
+        self.assertEqual(len(calls), 1)
+
+    def test_every_request_still_returns_fresh_payload_when_throttled(self) -> None:
+        """Skipping the collection must not skip the answer: the page still
+        needs a payload, just one built from the database as it stands."""
+        base = self._serve(lambda: None, self._dashboard(), min_interval=30.0)
+        for _ in range(3):
+            with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+                self.assertIn("totals", json.loads(res.read()))
 
 
 if __name__ == "__main__":

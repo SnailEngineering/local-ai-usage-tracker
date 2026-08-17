@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,17 +23,36 @@ from typing import Callable
 from . import dashboard
 
 
+# Shortest gap between two collections, however many tabs are asking. The page
+# polls on its own timer, so N open tabs otherwise means N collections per
+# interval -- each one walking every archived file while holding the lock that
+# every other request is waiting on.
+MIN_COLLECT_INTERVAL_S = 20.0
+
+
 def make_server(
     conn: sqlite3.Connection,
     collect_fn: Callable[[], None],
     dashboard_path: Path,
     host: str,
     port: int,
+    min_collect_interval: float = MIN_COLLECT_INTERVAL_S,
 ) -> ThreadingHTTPServer:
     # Collection and the payload query both touch `conn`; a lock keeps
     # concurrent requests (e.g. a stray double-click on Refresh) from
     # interleaving writes and reads on the one connection.
     lock = threading.Lock()
+    last_collect = [0.0]  # monotonic stamp of the last collection, boxed
+
+    def collect_if_due() -> None:
+        """Collect unless one just ran. Held under `lock`, so a burst of
+        refreshes coalesces into one collection and the rest simply read the
+        database it just wrote."""
+        now = time.monotonic()
+        if now - last_collect[0] < min_collect_interval:
+            return
+        collect_fn()
+        last_collect[0] = time.monotonic()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: A002 - stdlib signature
@@ -65,7 +85,7 @@ def make_server(
             try:
                 if self.path == "/api/data":
                     with lock:
-                        collect_fn()
+                        collect_if_due()
                         payload = dashboard.build_payload(conn)
                     self._send_json(payload)
                     return
