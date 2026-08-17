@@ -89,6 +89,18 @@ class ServerTests(unittest.TestCase):
 
         self.assertEqual(len(calls), 1)
 
+    def test_the_first_request_always_collects(self) -> None:
+        """The throttle must not suppress the very first collection. Whether
+        time.monotonic() counts from boot or from process start is
+        unspecified and differs between CPython builds on macOS, so "never
+        collected" cannot be spelled as a zero stamp."""
+        calls = []
+        base = self._serve(lambda: calls.append(1), self._dashboard(),
+                           min_interval=3600.0)
+        with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+            self.assertEqual(res.status, 200)
+        self.assertEqual(len(calls), 1)
+
     def test_every_request_still_returns_fresh_payload_when_throttled(self) -> None:
         """Skipping the collection must not skip the answer: the page still
         needs a payload, just one built from the database as it stands."""

@@ -42,14 +42,19 @@ def make_server(
     # concurrent requests (e.g. a stray double-click on Refresh) from
     # interleaving writes and reads on the one connection.
     lock = threading.Lock()
-    last_collect = [0.0]  # monotonic stamp of the last collection, boxed
+    # Monotonic stamp of the last collection, boxed so the closure can rebind
+    # it. None means "never", which is not the same as 0.0: time.monotonic()'s
+    # epoch is not specified, and on macOS it is time since boot under some
+    # builds and time since process start under others -- a 0.0 sentinel
+    # silently suppresses the very first collection on the latter.
+    last_collect: list[float | None] = [None]
 
     def collect_if_due() -> None:
         """Collect unless one just ran. Held under `lock`, so a burst of
         refreshes coalesces into one collection and the rest simply read the
         database it just wrote."""
-        now = time.monotonic()
-        if now - last_collect[0] < min_collect_interval:
+        previous = last_collect[0]
+        if previous is not None and time.monotonic() - previous < min_collect_interval:
             return
         collect_fn()
         last_collect[0] = time.monotonic()
