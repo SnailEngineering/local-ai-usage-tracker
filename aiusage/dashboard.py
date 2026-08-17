@@ -141,28 +141,34 @@ def build_payload(conn: sqlite3.Connection) -> dict:
     # Per-project spend (project comes from the session's cwd, both sources set
     # it). Grouped by month so the drill-down gets its own ranking; the all-time
     # table is the same numbers summed back up.
+    #
+    # The grouping has to include `day`, not just the month: `rates_for()` is a
+    # function of the day, so a DATED_OVERRIDES boundary landing mid-month would
+    # otherwise price the whole month's tokens at whichever rate applied on one
+    # arbitrary day of it. Price each day, then roll the dollars up -- that way
+    # this table reconciles with the month table instead of drifting from it.
     proj: dict[str, dict] = {}
     month_proj: dict[str, dict[str, dict]] = defaultdict(dict)
 
     def _proj_entry(store: dict, d: dict) -> dict:
         return store.setdefault(d["project"], {
             "project": d["project"], "cost_usd": 0.0, "total_tokens": 0,
-            "last_day": d["last_day"], "messages": 0, "unpriced": False,
+            "last_day": d["day"], "messages": 0, "unpriced": False,
         })
 
     for r in conn.execute("""
-        SELECT substr(day,1,7) AS month, COALESCE(project,'(unknown)') AS project,
+        SELECT day, COALESCE(project,'(unknown)') AS project,
                provider, model,
                SUM(input_tokens) input_tokens, SUM(output_tokens) output_tokens,
                SUM(cache_write_5m_tokens) cache_write_5m_tokens,
                SUM(cache_write_1h_tokens) cache_write_1h_tokens,
                SUM(cache_read_tokens) cache_read_tokens,
-               MAX(day) last_day, COUNT(*) n
+               COUNT(*) n
         FROM usage_event WHERE project IS NOT NULL
-        GROUP BY month, project, provider, model
+        GROUP BY day, project, provider, model
     """):
         d = dict(r)
-        d["day"] = d["last_day"]
+        d["month"] = d["day"][:7]
         d["model"] = pricing.normalize_model(d["model"])
         # None means "no rate on file" and must not collapse to zero -- flag the
         # project instead, the same way the month and model tables do.
@@ -178,7 +184,7 @@ def build_payload(conn: sqlite3.Connection) -> dict:
                 e["cost_usd"] += c
             e["total_tokens"] += tokens
             e["messages"] += d["n"]
-            e["last_day"] = max(e["last_day"], d["last_day"])
+            e["last_day"] = max(e["last_day"], d["day"])
     project_rows = sorted(proj.values(), key=lambda x: -x["cost_usd"])[:15]
     month_project_rows = {
         m: sorted(v.values(), key=lambda x: -x["cost_usd"])[:15]

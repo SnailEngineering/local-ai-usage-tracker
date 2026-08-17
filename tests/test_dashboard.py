@@ -57,6 +57,32 @@ class DashboardTests(unittest.TestCase):
             self.assertNotIn("<img src=x", html)
             self.assertIn("\\u003c/script", html)
 
+    def test_project_cost_is_priced_per_day_across_a_rate_boundary(self) -> None:
+        """`rates_for()` is a function of the day, so project rows have to be
+        priced per day and summed. Pricing a whole month's tokens at one
+        arbitrary day's rate silently mis-costs every project whose usage
+        straddles a DATED_OVERRIDES boundary -- and makes this table stop
+        reconciling with the month table beside it."""
+        # gpt-5.6-terra: $2.50/MTok input through 2026-08-01, $2.00 from 08-02.
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                _event(id="a", day="2026-08-01", ts="2026-08-01T10:00:00Z",
+                       provider="openai", source="codex_local", model="gpt-5.6-terra",
+                       project="straddler", input_tokens=1_000_000, output_tokens=0),
+                _event(id="b", day="2026-08-02", ts="2026-08-02T10:00:00Z",
+                       provider="openai", source="codex_local", model="gpt-5.6-terra",
+                       project="straddler", input_tokens=1_000_000, output_tokens=0),
+            ])
+            payload = dashboard.build_payload(conn)
+            project = {p["project"]: p for p in payload["projects"]}["straddler"]
+
+            self.assertAlmostEqual(project["cost_usd"], 4.50, places=6)
+            # The whole point: it agrees with the headline and the month table.
+            self.assertAlmostEqual(project["cost_usd"], payload["totals"]["cost_usd"],
+                                   places=6)
+            self.assertAlmostEqual(project["cost_usd"], payload["months"][0]["cost_usd"],
+                                   places=6)
+
 
 if __name__ == "__main__":
     unittest.main()
