@@ -141,7 +141,7 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int | None]:
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     """Parse archived JSONL from the last read offset of each file."""
-    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0}
+    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0}
     if not archive_dir.is_dir():
         return stats
 
@@ -179,7 +179,17 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     continue
                 if rec.get("type") != "assistant":
                     continue
-                row = _usage_row(rec, now)
+                try:
+                    row = _usage_row(rec, now)
+                except (ValueError, TypeError, AttributeError):
+                    # A structurally valid record with a malformed timestamp or
+                    # token value. Skipping it costs one message; letting it
+                    # raise would roll the whole source back and re-read the
+                    # same byte forever, so the collector could never advance
+                    # past it -- and every file sorted after this one would
+                    # stay unread too.
+                    stats["bad_records"] += 1
+                    continue
                 if row:
                     batch.append(row)
 
@@ -215,13 +225,17 @@ def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str) 
         if not day:
             continue
         for model, total in (entry.get("tokensByModel") or {}).items():
+            try:
+                total_tokens = int(total or 0)
+            except (TypeError, ValueError):
+                continue
             rows.append({
                 "id": f"ccstats:{day}:{model}",
                 "source": "claude_code_stats_cache",
                 "provider": PROVIDER,
                 "day": day,
                 "model": model,
-                "total_tokens": int(total or 0),
+                "total_tokens": total_tokens,
                 "ingested_at": now,
             })
     return db.upsert_coarse(conn, rows)

@@ -102,6 +102,41 @@ class CodexLocalIngestTests(unittest.TestCase):
             row = conn.execute("SELECT input_tokens FROM usage_event").fetchone()
             self.assertEqual(row["input_tokens"], 7)
 
+    def _totals(self, conn) -> tuple[int, int]:
+        r = conn.execute(
+            "SELECT COUNT(*) n, COALESCE(SUM(input_tokens), 0) t FROM usage_event"
+        ).fetchone()
+        return (r["n"], r["t"])
+
+    def test_one_malformed_record_does_not_stall_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / "archive"
+            archive.mkdir()
+            session = archive / "sess.jsonl"
+
+            def usage(ts: str, tokens: int) -> dict:
+                return {"timestamp": ts, "type": "event_msg", "payload": {
+                    "type": "token_count", "info": {"last_token_usage": {
+                        "total_tokens": tokens, "input_tokens": tokens}}}}
+
+            session.write_text("".join(json.dumps(r) + "\n" for r in [
+                {"timestamp": "2026-08-02T12:00:00Z", "type": "turn_context",
+                 "payload": {"model": "gpt-5.6-terra"}},
+                usage("2026-08-02T12:00:01Z", 5),
+                usage("not-a-timestamp", 9),
+                usage("2026-08-02T12:00:03Z", 7),
+            ]))
+            conn = db.connect(Path(tmp) / "usage.db")
+            self.addCleanup(conn.close)
+
+            stats = codex_local.ingest(conn, archive, "now")
+
+            self.assertEqual(stats["bad_records"], 1)
+            self.assertEqual(self._totals(conn), (2, 12))
+            offset = json.loads(conn.execute(
+                "SELECT value FROM ingest_state").fetchone()["value"])["offset"]
+            self.assertEqual(offset, session.stat().st_size)
+
 
 if __name__ == "__main__":
     unittest.main()

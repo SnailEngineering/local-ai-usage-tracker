@@ -76,7 +76,7 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | Non
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
-    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0}
+    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0}
     if not archive_dir.is_dir():
         return stats
 
@@ -155,45 +155,18 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                 if not ts:
                     continue
 
+                # Incremented before the guarded block below so a record that
+                # fails validation still consumes its sequence number: ids stay
+                # stable if the same file is ever re-parsed from the start.
                 seq += 1
-                total_in = usage.get("input_tokens", 0) or 0
-                cached_in = usage.get("cached_input_tokens", 0) or 0
-                out = usage.get("output_tokens", 0) or 0
-                # Present since ~0.146 but always zero so far: OpenAI caching is
-                # implicit, so there is no separate write to charge for. Read it
-                # anyway so a future non-zero value is picked up automatically.
-                cache_write = usage.get("cache_write_input_tokens", 0) or 0
-
-                # A small number of records carry a total with the whole
-                # breakdown zeroed (observed on compaction turns). Dropping them
-                # silently loses tokens; attribute the remainder to input, which
-                # is where essentially all of it lives on these tools.
-                declared = usage.get("total_tokens", 0) or 0
-                if declared and (total_in + out) == 0:
-                    total_in = declared
-
-                batch.append({
-                    "id": f"codex:{session_id}:{seq}",
-                    "source": SOURCE,
-                    "provider": PROVIDER,
-                    "ts": ts,
-                    "day": _local_day(ts),
-                    "model": model,
-                    # Codex reports cached tokens inside input_tokens; split them
-                    # so the column means the same thing as the Anthropic one.
-                    "input_tokens": max(total_in - cached_in, 0),
-                    "output_tokens": out,
-                    "cache_write_5m_tokens": cache_write,
-                    "cache_write_1h_tokens": 0,
-                    "cache_read_tokens": cached_in,
-                    "reasoning_tokens": usage.get("reasoning_output_tokens", 0) or 0,
-                    "requests": 1,
-                    "project": os.path.basename(cwd) if cwd else None,
-                    "git_branch": None,
-                    "session_id": session_id,
-                    "service_tier": (p.get("rate_limits") or {}).get("plan_type"),
-                    "ingested_at": now,
-                })
+                try:
+                    row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now)
+                except (ValueError, TypeError, AttributeError):
+                    # See claude_code_local.ingest: raising here would roll the
+                    # whole source back and stall it on this byte permanently.
+                    stats["bad_records"] += 1
+                    continue
+                batch.append(row)
 
         db.set_state(conn, state_key,
                      json.dumps({"offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns}), now)
@@ -204,6 +177,61 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
 
     stats["events"] += db.upsert_usage(conn, batch)
     return stats
+
+
+def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
+               model: str, cwd: str | None, now: str) -> dict:
+    """Build one usage row from a `token_count` payload. Raises on malformed
+    input; `ingest` counts that and moves on."""
+    ts = rec["timestamp"]
+    total_in = usage.get("input_tokens", 0) or 0
+    cached_in = usage.get("cached_input_tokens", 0) or 0
+    out = usage.get("output_tokens", 0) or 0
+    # Present since ~0.146 but always zero so far: OpenAI caching is
+    # implicit, so there is no separate write to charge for. Read it
+    # anyway so a future non-zero value is picked up automatically.
+    cache_write = usage.get("cache_write_input_tokens", 0) or 0
+
+    # A small number of records carry a total with the whole
+    # breakdown zeroed (observed on compaction turns). Dropping them
+    # silently loses tokens; attribute the remainder to input, which
+    # is where essentially all of it lives on these tools.
+    declared = usage.get("total_tokens", 0) or 0
+    if declared and (total_in + out) == 0:
+        total_in = declared
+
+    return {
+        "id": f"codex:{session_id}:{seq}",
+        "source": SOURCE,
+        "provider": PROVIDER,
+        "ts": ts,
+        "day": _local_day(ts),
+        "model": model,
+        # Codex reports cached tokens inside input_tokens; split them
+        # so the column means the same thing as the Anthropic one.
+        "input_tokens": max(total_in - cached_in, 0),
+        "output_tokens": out,
+        "cache_write_5m_tokens": cache_write,
+        "cache_write_1h_tokens": 0,
+        "cache_read_tokens": cached_in,
+        "reasoning_tokens": usage.get("reasoning_output_tokens", 0) or 0,
+        "requests": 1,
+        "project": os.path.basename(cwd) if cwd else None,
+        "git_branch": None,
+        "session_id": session_id,
+        "service_tier": (p.get("rate_limits") or {}).get("plan_type"),
+        "ingested_at": now,
+    }
+
+
+def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    copied, total = archive(codex_dir / "sessions", archive_dir)
+    stats = ingest(conn, archive_dir, now)
+    stats["archived"] = copied
+    stats["source_files"] = total
+    return stats
+
 
 
 def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:
