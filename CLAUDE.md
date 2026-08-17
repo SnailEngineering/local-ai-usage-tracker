@@ -12,18 +12,21 @@ python3 -m unittest discover -s tests   # the whole suite
 ```
 
 ```sh
-./collect.py                        # run every configured source, rebuild dashboard.html
+./collect.py                         # run every configured source, rebuild dashboard.html
 ./collect.py --status                # print what's in the DB and the last few runs
 ./collect.py --only claude_code      # run a single source (claude_code|codex)
 ./collect.py --no-dashboard          # collect without rebuilding dashboard.html
 ./collect.py --open                  # ...and open dashboard.html afterward
-./collect.py --serve                 # serve on localhost, re-collecting on every dashboard refresh
+./collect.py --serve                 # serve on localhost, re-collecting on dashboard refresh
+./collect.py --prune 180 [--yes]     # list (or delete) fully-ingested archive older than N days
 ./setup.sh                           # one-time: .env, ~/.zshrc aliases, optional launchd install
 ```
 
 `.env` (copied from `.env.example` by `setup.sh`) holds only path overrides
-(`AIU_DB`, `AIU_ARCHIVE`, `AIU_CLAUDE_DIR`, `AIU_CODEX_DIR`, `AIU_DASHBOARD`) —
-no credentials are needed. Real environment variables always win over `.env`.
+(`AIU_DB`, `AIU_ARCHIVE`, `AIU_ARCHIVE_CODEX`, `AIU_CLAUDE_DIR`, `AIU_CODEX_DIR`,
+`AIU_DASHBOARD`) — no credentials are needed. Real environment variables always
+win over `.env`. Relative values resolve against the repo root, not the caller's
+cwd (`collect._expand`), so the installed aliases behave the same from anywhere.
 
 ## Architecture
 
@@ -61,8 +64,20 @@ duplicates.
 - `coarse_daily_tokens` — recovered from Claude Code's `stats-cache.json`: one
   scalar per model per day, no input/output/cache split, so it's shown as a
   footnote and never enters cost math.
-- `ingest_state` — offsets/cursors keyed by `source:relative_path`, the incremental-read bookkeeping.
-- `run_log` — append-only, so a silently failing cron job is visible via `--status`.
+- `ingest_state` — offsets/cursors keyed by `source:relative_path`, the
+  incremental-read bookkeeping. Values are JSON: `offset` plus `mtime_ns`, and
+  for Codex also `seq` and a `head`/`head_len` hash of the file's first 4KB.
+  Offsets are **byte** positions, so both ingesters read the files in binary —
+  decoding first would let CRLF or an undecodable byte desync them permanently.
+- `run_log` — append-only, so a silently failing cron job is visible via
+  `--status`. `triggered_by` separates `scheduled` runs from `serve` ones;
+  both `--status` and the dashboard show scheduled runs plus anything that
+  failed, because a `--serve` session would otherwise bury them.
+
+Schema changes go through `PRAGMA user_version`: bump `db.SCHEMA_VERSION` and add
+the step to `db.MIGRATIONS` (a callable, so it can inspect the DB and stay
+idempotent — the same column arrives via `SCHEMA` on a new database and via
+`ALTER` on an old one). `CREATE TABLE IF NOT EXISTS` alone cannot migrate.
 
 ### Pricing (`aiusage/pricing.py`)
 
@@ -108,6 +123,22 @@ opened with `check_same_thread=False` and every access — collection and the
 payload query alike — is serialized behind one `threading.Lock` in
 `server.py`. This is the only path in the codebase where the DB connection is
 touched from more than one thread.
+
+Collection is throttled to at most once per `MIN_COLLECT_INTERVAL_S` (20s)
+inside that lock, so N open tabs share one collection rather than each forcing
+their own. Every branch of `do_GET` must answer: an exception escaping it closes
+the socket with no response, which the page cannot distinguish from "no server",
+and its fallback there is `location.reload()` — a failing collector would loop
+the tab. Failures return a 500 the page reports in place instead.
+
+### Retention (`aiusage/prune.py`, `collect.py --prune`)
+
+The archive never shrinks on its own. `--prune DAYS` lists archived files older
+than the cutoff; `--yes` deletes them. A file is only prunable when
+`ingest_state` holds an offset for it *equal to its current size* — proof the
+last run consumed every byte — so a partially-read file is never dropped. The
+state row is deleted with the file, and re-archiving simply re-ingests (every
+primary key is deterministic, so a replay is a no-op).
 
 ### Adding a new source
 

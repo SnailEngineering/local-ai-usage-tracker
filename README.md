@@ -82,6 +82,24 @@ Prefer to do it by hand instead? `./collect.py` collects and builds the
 dashboard; `./collect.py --status` prints what's in the database and the last
 few runs.
 
+### Configuration
+
+Everything is optional and lives in `.env` (or the real environment, which wins):
+
+| Variable | Default | What it moves |
+|---|---|---|
+| `AIU_DB` | `./data/usage.db` | the SQLite database |
+| `AIU_ARCHIVE` | `./data/archive` | mirrored Claude Code JSONL |
+| `AIU_ARCHIVE_CODEX` | `./data/archive-codex` | mirrored Codex rollouts (the larger half) |
+| `AIU_CLAUDE_DIR` | `~/.claude` | where Claude Code keeps its sessions |
+| `AIU_CODEX_DIR` | `~/.codex` | where Codex keeps its sessions |
+| `AIU_DASHBOARD` | `./dashboard.html` | the rendered page |
+
+Relative values are resolved against the repository, not your shell's working
+directory, so they mean the same thing wherever you run the collector from —
+`aiusage` from another directory reads your database rather than quietly
+starting an empty one beside you. Use an absolute path to put data elsewhere.
+
 ### Live updates while the tab is open
 
 `dashboard.html` always has a Refresh button and auto-refreshes on an
@@ -95,9 +113,11 @@ interval (60s by default). What that does depends on how you opened it:
   --interval 0` to leave only the Refresh button.
 - **`./collect.py --serve`**: a small local `ThreadingHTTPServer`
   (`aiusage/server.py`) at `http://127.0.0.1:8787/`. Every refresh (auto or
-  click) hits `GET /api/data`, which re-runs both collectors and re-renders
-  the charts in place — no full page reload, no separate terminal running
-  `./collect.py` yourself.
+  click) hits `GET /api/data`, which re-renders the charts in place — no full
+  page reload, no separate terminal running `./collect.py` yourself. It
+  re-collects at most once every 20s, so several open tabs share one
+  collection instead of each triggering their own. If a collection fails, the
+  page says so and keeps the figures it already has, rather than reloading.
 
 Start it in the foreground; add `--open` to launch it in your browser:
 
@@ -144,8 +164,14 @@ launchctl start local.ai-usage-tracker    # run once now to verify
 tail -f data/collect.log
 ```
 
-Runs at 09:00 and 21:00. `RunAtLoad` makes it catch up after the Mac was asleep
-at a scheduled time — without it, a closed lid means that run is simply skipped.
+Runs at 09:00 and 21:00. launchd re-runs a missed `StartCalendarInterval` when
+the Mac wakes, so a closed lid at 09:00 does not lose that run; `RunAtLoad`
+additionally collects once at login, which covers a machine that is only awake
+outside those hours.
+
+On newer macOS, `launchctl bootstrap gui/$UID <plist>` and
+`launchctl kickstart -k gui/$UID/local.ai-usage-tracker` are the current
+spellings of load/start. The deprecated `load`/`start` above still work.
 
 ### Also do this once
 
@@ -206,9 +232,10 @@ python3 -m unittest discover -s tests
 ```
 
 They cover the parts where a silent regression would corrupt the numbers
-rather than crash: incremental re-ingest, same-size archive rewrites, dated
-pricing windows, and the dashboard's unpriced-model and payload-escaping
-handling.
+rather than crash: incremental re-ingest and byte-offset integrity, archive
+rewrites (shrinking, growing and same-size), malformed records, dated pricing
+windows, per-day project costing, schema migration, archive pruning, and the
+dashboard's unpriced-model and payload-escaping handling.
 
 ## Verification
 
@@ -258,6 +285,7 @@ aiusage/
   db.py                                 schema, upserts, run log
   pricing.py                            rate table, cost computation
   dashboard.py                          SQL -> JSON -> static HTML
+  prune.py                              archive retention for --prune
   server.py                             optional localhost server for --serve
   sources/
     claude_code_local.py                archive + incremental JSONL parse
@@ -286,12 +314,27 @@ same care as the source directories it mirrors.
 
 ## Disk
 
-The archive only ever grows — that's the point, and nothing prunes it. Expect
-roughly a couple of GB per year at steady daily use (Codex rollout files
-dominate; single sessions can reach 100MB+). `du -sh data/` tells you where you
-are. If you ever need the space back, deleting old archived JSONL is safe:
-everything already ingested stays in `usage.db`, and the byte-offset bookkeeping
-in `ingest_state` simply stops matching files that are gone.
+The archive only ever grows — that's the point. Expect roughly a couple of GB
+per year at steady daily use (Codex rollout files dominate; single sessions can
+reach 100MB+). `du -sh data/` tells you where you are.
+
+When you want the space back, `--prune` reclaims it safely:
+
+```sh
+./collect.py --prune 180          # list what's older than 180 days, delete nothing
+./collect.py --prune 180 --yes    # actually delete it
+```
+
+Listing is the default, and there is no undo — these are full session
+transcripts, not just token counts. A file is only ever removed when all three
+hold: it is older than the cutoff, `ingest_state` has an offset for it, and that
+offset equals its current size, proving the last run read every byte with no
+partial trailing line outstanding. Anything else is listed with the reason it
+was kept, so nothing is dropped on the assumption it was ingested.
+
+What you lose is the ability to re-parse those sessions later. What you keep is
+every number: the events are already in `usage.db`, and cost is derived at
+render time from the token columns, so no figure on the dashboard changes.
 
 ## Adding Ollama later
 
