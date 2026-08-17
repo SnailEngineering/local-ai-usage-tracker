@@ -32,7 +32,7 @@ MIN_COLLECT_INTERVAL_S = 20.0
 
 def make_server(
     conn: sqlite3.Connection,
-    collect_fn: Callable[[], None],
+    collect_fn: Callable[[], int],   # returns the failure count, like run_sources
     dashboard_path: Path,
     host: str,
     port: int,

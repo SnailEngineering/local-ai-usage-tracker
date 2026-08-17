@@ -22,8 +22,10 @@
     <dict><key>Hour</key><integer>21</integer><key>Minute</key><integer>0</integer></dict>
   </array>
 
-  <!-- Catch up if the Mac was asleep at the scheduled time. Without this, a
-       closed lid at 09:00 means that run is simply skipped. -->
+  <!-- launchd already runs a missed StartCalendarInterval when the Mac wakes,
+       so the schedule survives a closed lid on its own. RunAtLoad is here for
+       a different reason: it collects once at login, so a machine that is only
+       awake outside 09:00/21:00 still gets a run. -->
   <key>RunAtLoad</key>
   <true/>
 

@@ -351,7 +351,6 @@ TEMPLATE = r"""<!doctype html>
   .baseline { stroke:var(--axis); stroke-width:1; }
   .seg { stroke:var(--surface); stroke-width:2; }
   .hit { fill:transparent; cursor:crosshair; }
-  .hit:hover ~ .crosshair { opacity:1; }
 
   .tip {
     position:absolute; pointer-events:none; opacity:0; transition:opacity .08s;
