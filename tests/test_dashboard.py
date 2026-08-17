@@ -83,6 +83,26 @@ class DashboardTests(unittest.TestCase):
             self.assertAlmostEqual(project["cost_usd"], payload["months"][0]["cost_usd"],
                                    places=6)
 
+    def test_the_other_bucket_never_reuses_a_model_slot(self) -> None:
+        """Models past MAX_MODEL_SERIES fold into "Other". If that bucket took a
+        real slot index, it would be drawn in the same colour as the last ranked
+        model -- in the chart and the legend both."""
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = [
+                _event(id=f"e{i}", model=f"model-{i:02d}",
+                       input_tokens=(100 - i) * 1000)
+                for i in range(dashboard.MAX_MODEL_SERIES + 3)
+            ]
+            payload = dashboard.build_payload(self._conn(tmp, rows))
+
+            self.assertIn("Other", payload["models"])
+            self.assertNotIn("Other", payload["model_slot"])
+            self.assertEqual(len(payload["model_slot"]), dashboard.MAX_MODEL_SERIES)
+            # Every ranked model holds a distinct slot, so the neutral fallback
+            # for "Other" cannot collide with any of them.
+            self.assertEqual(sorted(payload["model_slot"].values()),
+                             list(range(dashboard.MAX_MODEL_SERIES)))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -284,6 +284,7 @@ TEMPLATE = r"""<!doctype html>
     --hover:rgba(11,11,11,0.045);
     --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
     --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+    --sother:#9b9a92;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
@@ -294,6 +295,7 @@ TEMPLATE = r"""<!doctype html>
       --hover:rgba(255,255,255,0.055);
       --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
       --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+      --sother:#6f6e68;
     }
   }
   :root[data-theme="dark"] {
@@ -304,6 +306,7 @@ TEMPLATE = r"""<!doctype html>
     --hover:rgba(255,255,255,0.055);
     --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
     --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --sother:#6f6e68;
   }
 
   * { box-sizing: border-box; }
@@ -430,9 +433,13 @@ const tok = n => n >= 1e9 ? (n/1e9).toFixed(2) + 'B'
 const num = n => n.toLocaleString('en-US');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
+/* Anything without a slot -- the "Other" bucket, or a series that arrived after
+   the payload was built -- gets the neutral hue, never a real series' colour.
+   Falling back to the last slot made "Other" indistinguishable from the 8th
+   model, in both the chart and the legend. */
 function colorOf(key, slots) {
   const i = slots[key];
-  return cssVar(SLOT[(i === undefined ? 7 : i) % 8]);
+  return cssVar(i === undefined ? '--sother' : SLOT[i % SLOT.length]);
 }
 
 /* Stacked bar chart with a crosshair + per-day tooltip.
