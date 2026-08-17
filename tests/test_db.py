@@ -76,5 +76,65 @@ class MigrationTests(unittest.TestCase):
                           f"MIGRATIONS entry exists for version {version}")
 
 
+class RunLogTests(unittest.TestCase):
+    def test_serve_runs_are_hidden_unless_they_failed(self) -> None:
+        """`--serve` re-collects per request, so an open tab writes two rows a
+        minute. The health views must still surface the scheduled runs they
+        exist for -- while never hiding a failure, whatever triggered it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "usage.db")
+            self.addCleanup(conn.close)
+
+            db.log_run(conn, "claude_code_local", "ok", "", "t", "t")
+            for _ in range(50):  # a serve session's worth of noise
+                db.log_run(conn, "claude_code_local", "ok", "", "t", "t", "serve")
+            db.log_run(conn, "codex_local", "error", "boom", "t", "t", "serve")
+            conn.commit()
+
+            visible = conn.execute(
+                "SELECT source, status, triggered_by FROM run_log "
+                "WHERE triggered_by = 'scheduled' OR status = 'error' "
+                "ORDER BY id").fetchall()
+
+            self.assertEqual([(r["source"], r["status"], r["triggered_by"]) for r in visible],
+                             [("claude_code_local", "ok", "scheduled"),
+                              ("codex_local", "error", "serve")])
+
+    def test_log_run_defaults_to_scheduled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = db.connect(Path(tmp) / "usage.db")
+            self.addCleanup(conn.close)
+            db.log_run(conn, "claude_code_local", "ok", "", "t", "t")
+            self.assertEqual(
+                conn.execute("SELECT triggered_by FROM run_log").fetchone()[0],
+                "scheduled")
+
+    def test_an_existing_database_gains_the_column(self) -> None:
+        """The pre-versioning shape: run_log without triggered_by, user_version
+        still 0. Migration has to add the column and keep the rows."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "usage.db"
+            raw = sqlite3.connect(path)
+            raw.executescript("""
+                CREATE TABLE run_log (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL,
+                  finished_at TEXT, source TEXT NOT NULL, status TEXT NOT NULL,
+                  detail TEXT);
+                INSERT INTO run_log (started_at, source, status)
+                  VALUES ('t', 'claude_code_local', 'ok');
+            """)
+            raw.commit()
+            raw.close()
+
+            conn = db.connect(path)
+            self.addCleanup(conn.close)
+
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0],
+                             db.SCHEMA_VERSION)
+            row = conn.execute("SELECT source, triggered_by FROM run_log").fetchone()
+            self.assertEqual((row["source"], row["triggered_by"]),
+                             ("claude_code_local", "scheduled"))
+
+
 if __name__ == "__main__":
     unittest.main()

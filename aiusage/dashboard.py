@@ -223,8 +223,13 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "cost_month": sum(day_cost(d) for d in cost_by_day if d >= month_start),
     }
 
+    # Scheduled runs plus any failure. A `--serve` session logs two rows a
+    # minute, which would otherwise be the entire panel and hide exactly the
+    # thing it is here to show: whether the launchd job is still working.
     runs = [dict(r) for r in conn.execute(
-        "SELECT source, status, detail, finished_at FROM run_log ORDER BY id DESC LIMIT 10")]
+        "SELECT source, status, detail, finished_at, triggered_by FROM run_log "
+        "WHERE triggered_by = 'scheduled' OR status = 'error' "
+        "ORDER BY id DESC LIMIT 10")]
 
     providers = sorted({r["provider"] for r in rows},
                        key=lambda p: PROVIDER_SLOT.get(p, 9))
@@ -659,7 +664,8 @@ function renderAll(app) {
         <thead><tr><th>Finished</th><th>Source</th><th>Status</th><th>Detail</th></tr></thead>
         <tbody>${DATA.runs.map(r => `<tr>
           <td>${esc((r.finished_at || '').slice(0, 19).replace('T', ' '))}</td>
-          <td>${esc(r.source)}</td>
+          <td>${esc(r.source)}${r.triggered_by && r.triggered_by !== 'scheduled'
+              ? ` <span style="color:var(--muted)">(${esc(r.triggered_by)})</span>` : ''}</td>
           <td class="${r.status === 'ok' ? 'ok' : r.status === 'error' ? 'err' : ''}">${esc(r.status)}</td>
           <td style="text-align:left;white-space:normal">${esc((r.detail || '').slice(0, 110))}</td>
         </tr>`).join('')}</tbody>

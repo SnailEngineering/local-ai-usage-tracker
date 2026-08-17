@@ -27,6 +27,11 @@ from aiusage.sources import claude_code_local, codex_local  # noqa: E402
 ROOT = Path(__file__).resolve().parent
 DEFAULT_PORT = 8787
 
+# `--serve` re-collects on every /api/data hit, so an open tab writes two
+# run_log rows a minute. Those drown out the launchd runs the log exists to
+# surveil, so the health views show scheduled runs plus anything that failed.
+SCHEDULED_OR_FAILED = "(triggered_by = 'scheduled' OR status = 'error')"
+
 
 def load_env(path: Path) -> None:
     """Minimal .env reader. Real environment variables always win, so you can
@@ -61,7 +66,8 @@ def _expand(value: str) -> Path:
 
 
 def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
-                 only: str | None = None, quiet: bool = False) -> int:
+                 only: str | None = None, quiet: bool = False,
+                 triggered_by: str = "scheduled") -> int:
     """Run every enabled source once, logging each to run_log. Returns the
     number of failures; one source raising never stops the other."""
     failures = 0
@@ -73,7 +79,7 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
                 print(f"  {name:<22} skipped ({skip_reason})")
             db.log_run(conn, name, "skipped", skip_reason,
                        datetime.now(timezone.utc).isoformat(),
-                       datetime.now(timezone.utc).isoformat())
+                       datetime.now(timezone.utc).isoformat(), triggered_by)
             conn.commit()
             return
         started = datetime.now(timezone.utc).isoformat()
@@ -84,13 +90,13 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
             if not quiet:
                 print(f"  {name:<22} ok       {detail}")
             db.log_run(conn, name, "ok", detail, started,
-                       datetime.now(timezone.utc).isoformat())
+                       datetime.now(timezone.utc).isoformat(), triggered_by)
         except Exception as e:  # keep other sources running
             conn.rollback()
             failures += 1
             print(f"  {name:<22} ERROR    {e}", file=sys.stderr)
             db.log_run(conn, name, "error", f"{e}\n{traceback.format_exc()}", started,
-                       datetime.now(timezone.utc).isoformat())
+                       datetime.now(timezone.utc).isoformat(), triggered_by)
         conn.commit()
 
     stage("claude_code_local", only in (None, "claude_code"),
@@ -149,7 +155,7 @@ def main() -> int:
     if args.serve:
         from aiusage import server
         collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
-                                          args.only, quiet=True)
+                                          args.only, quiet=True, triggered_by="serve")
         httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port)
         url = f"http://127.0.0.1:{args.port}/"
         print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "
@@ -196,10 +202,12 @@ def print_status(conn, db_path: Path) -> int:
 
     print("\nlast runs:")
     for r in conn.execute(
-        "SELECT source, status, detail, finished_at FROM run_log "
-        "ORDER BY id DESC LIMIT 8"
+        "SELECT source, status, detail, finished_at, triggered_by FROM run_log "
+        f"WHERE {SCHEDULED_OR_FAILED} ORDER BY id DESC LIMIT 8"
     ):
-        print(f"  {r['finished_at'][:19]}  {r['source']:<22}{r['status']:<9}{(r['detail'] or '')[:60]}")
+        via = "" if r["triggered_by"] == "scheduled" else f" ({r['triggered_by']})"
+        print(f"  {r['finished_at'][:19]}  {r['source'] + via:<22}"
+              f"{r['status']:<9}{(r['detail'] or '')[:60]}")
     return 0
 
 

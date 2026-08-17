@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Callable
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -63,7 +64,8 @@ CREATE TABLE IF NOT EXISTS run_log (
   finished_at TEXT,
   source      TEXT NOT NULL,
   status      TEXT NOT NULL,   -- ok | skipped | error
-  detail      TEXT
+  detail      TEXT,
+  triggered_by TEXT NOT NULL DEFAULT 'scheduled'  -- scheduled | serve
 );
 """
 
@@ -84,11 +86,25 @@ BUSY_TIMEOUT_S = 30.0
 # no-op against one that already exists, so without this a new column would
 # silently never reach any installation that has already run -- and the failure
 # would surface much later, as an OperationalError mid-collect.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
-# version -> list of statements taking the database from (version - 1) to it.
-# Each entry runs exactly once, in order, inside one transaction.
-MIGRATIONS: dict[int, list[str]] = {}
+
+def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+    """ALTER TABLE ... ADD COLUMN, but only if it is actually missing. The same
+    column is created two ways -- by SCHEMA on a new database and by a
+    migration on an old one -- so the step has to be safe either way."""
+    existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+# version -> the step taking the database from (version - 1) to it. Callables
+# rather than raw SQL so a step can inspect the database first and stay
+# idempotent; each runs at most once, in order, inside one transaction.
+MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    2: lambda conn: _add_column(
+        conn, "run_log", "triggered_by", "TEXT NOT NULL DEFAULT 'scheduled'"),
+}
 
 
 def migrate(conn: sqlite3.Connection) -> int:
@@ -100,8 +116,9 @@ def migrate(conn: sqlite3.Connection) -> int:
 
     applied = 0
     for version in range(current + 1, SCHEMA_VERSION + 1):
-        for statement in MIGRATIONS.get(version, []):
-            conn.execute(statement)
+        step = MIGRATIONS.get(version)
+        if step is not None:
+            step(conn)
         applied += 1
     # PRAGMA does not take a bound parameter, and SCHEMA_VERSION is ours.
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -163,8 +180,10 @@ def upsert_coarse(conn: sqlite3.Connection, rows: list[dict]) -> int:
 
 
 def log_run(conn: sqlite3.Connection, source: str, status: str, detail: str,
-            started_at: str, finished_at: str) -> None:
+            started_at: str, finished_at: str,
+            triggered_by: str = "scheduled") -> None:
     conn.execute(
-        "INSERT INTO run_log (started_at, finished_at, source, status, detail) VALUES (?,?,?,?,?)",
-        (started_at, finished_at, source, status, detail),
+        "INSERT INTO run_log (started_at, finished_at, source, status, detail, "
+        "triggered_by) VALUES (?,?,?,?,?,?)",
+        (started_at, finished_at, source, status, detail, triggered_by),
     )
