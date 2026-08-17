@@ -45,7 +45,19 @@ def load_env(path: Path) -> None:
 
 
 def _expand(value: str) -> Path:
-    return Path(os.path.expanduser(value)).resolve()
+    """Resolve a configured path.
+
+    Relative values are resolved against the repository, not the process's
+    working directory. They come from `.env`, which lives in the repository,
+    and the shell aliases invoke this script by absolute path from wherever
+    you happen to be standing -- so a CWD-relative rule means `aiusage` run
+    from another directory quietly starts a second, empty database there
+    instead of using yours. Pass an absolute path to put data elsewhere.
+    """
+    path = Path(os.path.expanduser(value))
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
 
 
 def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
