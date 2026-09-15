@@ -171,7 +171,8 @@ def main() -> int:
         collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
                                           codex_archive_dir, args.only, quiet=True,
                                           triggered_by="serve")
-        httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port)
+        httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port,
+                                   refresh_seconds=args.interval)
         url = f"http://127.0.0.1:{args.port}/"
         print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "
               f"request to /api/data)")

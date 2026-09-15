@@ -37,6 +37,7 @@ def make_server(
     host: str,
     port: int,
     min_collect_interval: float = MIN_COLLECT_INTERVAL_S,
+    refresh_seconds: int = 60,
 ) -> ThreadingHTTPServer:
     # Collection and the payload query both touch `conn`; a lock keeps
     # concurrent requests (e.g. a stray double-click on Refresh) from
@@ -95,7 +96,14 @@ def make_server(
                     self._send_json(payload)
                     return
                 if self.path in ("/", "/dashboard.html"):
+                    # Rebuild from the database rather than serving the file
+                    # written at startup: a long-running --serve would
+                    # otherwise hand every browser reload that old snapshot,
+                    # and the tab would show days-stale numbers until its next
+                    # /api/data poll replaced them. Not collecting here keeps
+                    # page loads fast; the poll does that.
                     with lock:
+                        dashboard.build(conn, dashboard_path, refresh_seconds)
                         self._send_file(dashboard_path, "text/html; charset=utf-8")
                     return
                 self.send_error(404)
