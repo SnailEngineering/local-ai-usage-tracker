@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -154,3 +155,34 @@ class BuildWriteTests(unittest.TestCase):
             leftovers = [p.name for p in out.parent.iterdir()
                          if p.name.startswith("dashboard.html.")]
             self.assertEqual(leftovers, [], "a temp file was left behind")
+
+    def test_concurrent_writers_do_not_share_a_temp_file(self) -> None:
+        """--serve writes through from request threads, so two writers can
+        share a pid. A temp name derived from the pid alone would have them
+        open the same file and interleave into it, and the loser's rename
+        would find nothing there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "dashboard.html"
+            # Big and distinct, so an interleave shows up as a mixed file
+            # rather than two writes that happen to agree.
+            pages = [chr(ord("a") + i) * 200_000 for i in range(8)]
+            errors: list[BaseException] = []
+
+            def writer(html: str) -> None:
+                try:
+                    dashboard.write_page(html, out)
+                except BaseException as exc:   # noqa: BLE001 - reported below
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=writer, args=(page,)) for page in pages]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            self.assertEqual(errors, [])
+            # Whoever renamed last wins, but the file must be exactly one
+            # page -- never two spliced together.
+            self.assertIn(out.read_text(), pages)
+            self.assertEqual([p.name for p in out.parent.iterdir()],
+                             ["dashboard.html"], "a temp file was left behind")

@@ -95,12 +95,20 @@ in this tool is a computed estimate, since neither subscription is billed per to
 
 Aggregates `usage_event` in SQL, prices it, then serializes one JSON payload
 (`build_payload()`) directly into `dashboard.html` as `DATA = {...}` — no build
-step, no network needed to view it. `render()` returns that page as a string
-and `build()` writes it; the split exists so `--serve` can answer a request
-without a disk round-trip. `build()` writes through a temp file and
-`os.replace`, because several processes write the same path (the launchd
-schedule, a manual `./collect.py`, `--serve`'s startup build) and a plain
-write would let a reader see a half-written page.
+step, no network needed to view it. The page is built in three separable
+pieces: `render_payload()` splices a payload into the template,
+`render()` is that over a fresh `build_payload()`, and `write_page()` puts a
+string on disk. `build()` is just `write_page(render(...))`. The split exists
+so `--serve` can answer a request without a disk round-trip, and so its
+`/api/data` can write the file through from the payload it already has.
+
+`write_page()` writes a `tempfile.mkstemp` file in the target directory and
+`os.replace`s it into position. Several writers target that path — the
+launchd schedule, a manual `./collect.py`, and every `--serve` request that
+writes through — and a plain write truncates first, so a reader (a browser on
+`file://`, the next collector) could see a half-written page. The temp name
+comes from `mkstemp`, not the pid: `--serve` writes through from request
+threads, which share one.
 
 Model series beyond `MAX_MODEL_SERIES` (8) fold into "Other"; provider→color
 slot is fixed (`PROVIDER_SLOT`) so adding a third provider never repaints the
@@ -131,8 +139,19 @@ left running for days handed every new tab that snapshot until its first poll
 replaced it. Fixing it client-side (fetching on load) is not an option — the
 page's no-answer fallback is `location.reload()`, so a `file://` open would
 reload-loop forever. `GET /` deliberately does *not* collect (the poll owns
-that) and never touches the dashboard file, so a page load cannot fail on an
-unwritable directory or race a scheduled `collect.py` writing that path.
+that) and renders in memory, so a page load cannot fail on an unwritable
+directory.
+
+`dashboard.html` on disk is then written through — after the response is
+flushed, best-effort, exceptions logged and swallowed — from both `GET /` and
+`GET /api/data`, so stopping the server does not leave the file back at
+whatever the startup build wrote. The poll matters more than the page load
+here: a tab left open for hours never reloads, so `/` alone would leave the
+file as stale as the last navigation. Two rules keep this from becoming the
+bug it replaced — it runs *after* the response (a page that rendered fine must
+not turn into a 500 because a directory is read-only) and it never raises (by
+then the response is on the wire, so do_GET's 500 handler would append a
+second status line and headers to a page the browser is mid-parse of).
 
 Requests run one per thread, so the shared `sqlite3.Connection` is opened with
 `check_same_thread=False` and every access — collection and the

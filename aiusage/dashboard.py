@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -261,14 +262,11 @@ def build_payload(conn: sqlite3.Connection) -> dict:
     }
 
 
-def render(conn: sqlite3.Connection,
-           refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> str:
-    """The whole page as a string. Split out from `build` so `--serve` can
-    answer a request without a disk round-trip -- writing the file just to
-    read it back would put a page load at the mercy of an unwritable
-    directory, and would race the scheduled `collect.py` writing the same
-    path from another process."""
-    payload = build_payload(conn)
+def render_payload(payload: dict,
+                   refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> str:
+    """The page for an already-built payload. Separate from `render` so
+    `--serve`'s /api/data, which has just built one, can write the file
+    through without querying everything a second time."""
     # The payload is spliced into an inline <script>, where the HTML parser wins
     # over the JS one: a project directory literally named `</script>...` would
     # otherwise close the block early and inject live markup. Escaping `<` keeps
@@ -279,23 +277,45 @@ def render(conn: sqlite3.Connection,
             .replace("__REFRESH_MS__", str(refresh_seconds * 1000)))
 
 
-def build(conn: sqlite3.Connection, out_path: Path,
-          refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> Path:
-    html = render(conn, refresh_seconds)
+def render(conn: sqlite3.Connection,
+           refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> str:
+    """The whole page as a string. Split out from `build` so `--serve` can
+    answer a request without a disk round-trip -- writing the file just to
+    read it back would put a page load at the mercy of an unwritable
+    directory, and would race the scheduled `collect.py` writing the same
+    path from another process."""
+    return render_payload(build_payload(conn), refresh_seconds)
+
+
+def write_page(html: str, out_path: Path) -> Path:
+    """Put `html` at `out_path`, atomically."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # Written through a temp file in the same directory and renamed, because
-    # more than one process writes this path -- the launchd schedule, a manual
-    # ./collect.py, a --serve startup. A plain write_text lets a reader (a
-    # browser on file://, another collector) see a half-written page; the
-    # rename is atomic, so a reader sees either the old file or the new one.
-    tmp = out_path.with_name(out_path.name + f".tmp{os.getpid()}")
+    # more than one writer targets this path -- the launchd schedule, a manual
+    # ./collect.py, and every --serve request that writes through. A plain
+    # write_text lets a reader (a browser on file://, another collector) see a
+    # half-written page; the rename is atomic, so a reader sees either the old
+    # file or the new one, never a torn mix.
+    #
+    # mkstemp rather than a pid-derived name: --serve writes through from
+    # request threads, so two writers can share a pid and would otherwise pick
+    # the same temp path and corrupt each other.
+    fd, tmp_name = tempfile.mkstemp(dir=out_path.parent,
+                                    prefix=out_path.name + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(html, encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(html)
         os.replace(tmp, out_path)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
     return out_path
+
+
+def build(conn: sqlite3.Connection, out_path: Path,
+          refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> Path:
+    return write_page(render(conn, refresh_seconds), out_path)
 
 
 TEMPLATE = r"""<!doctype html>

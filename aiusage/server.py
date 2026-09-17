@@ -20,6 +20,7 @@ import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Callable
 
 from . import dashboard
@@ -39,6 +40,7 @@ def make_server(
     port: int,
     min_collect_interval: float = MIN_COLLECT_INTERVAL_S,
     refresh_seconds: int = dashboard.DEFAULT_REFRESH_SECONDS,
+    dashboard_path: Path | None = None,
 ) -> ThreadingHTTPServer:
     # Collection and the payload query both touch `conn`; a lock keeps
     # concurrent requests (e.g. a stray double-click on Refresh) from
@@ -60,6 +62,25 @@ def make_server(
             return
         collect_fn()
         last_collect[0] = time.monotonic()
+
+    def write_through(html: str) -> None:
+        """Keep the on-disk dashboard.html in step with what we just served,
+        so a file:// open after the server stops is not back at whatever the
+        startup build wrote.
+
+        Deliberately best-effort and deliberately *after* the response: the
+        page the browser gets must not depend on this file being writable.
+        Not under `lock` either -- it touches no shared state, and
+        dashboard.write_page renames into place, so concurrent writers just
+        mean the last one wins with data no staler than its own request."""
+        if dashboard_path is None:
+            return
+        try:
+            dashboard.write_page(html, dashboard_path)
+        except Exception:
+            # Worth seeing in the --serve output, never worth failing a
+            # request that has already been answered correctly.
+            traceback.print_exc()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # noqa: A002 - stdlib signature
@@ -99,6 +120,10 @@ def make_server(
                         collect_if_due()
                         payload = dashboard.build_payload(conn)
                     self._send_json(payload)
+                    # The poll, not the page load, is what picks up new data
+                    # over a long session -- so it is what keeps the file
+                    # current. Rendered from the payload already in hand.
+                    write_through(dashboard.render_payload(payload, refresh_seconds))
                     return
                 if self.path in ("/", "/dashboard.html"):
                     # Render from the database rather than serving the file
@@ -106,13 +131,15 @@ def make_server(
                     # otherwise hand every browser reload that old snapshot,
                     # and the tab would show days-stale numbers until its next
                     # /api/data poll replaced them. Rendered in memory, never
-                    # through the dashboard file -- a page load should not depend
-                    # on that file being writable, nor race the scheduled
-                    # collect.py writing it. Not collecting here keeps page
-                    # loads fast; the poll does that.
+                    # through the dashboard file -- a page load should not
+                    # depend on that file being writable. It is written back
+                    # afterwards, best-effort, once the browser has its page.
+                    # Not collecting here keeps page loads fast; the poll does
+                    # that.
                     with lock:
                         html = dashboard.render(conn, refresh_seconds)
                     self._send_html(html)
+                    write_through(html)
                     return
                 self.send_error(404)
             except Exception as e:
