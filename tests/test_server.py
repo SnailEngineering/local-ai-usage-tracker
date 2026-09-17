@@ -70,10 +70,22 @@ class ServerTests(unittest.TestCase):
         base = self._serve(lambda: None, self._dashboard())
         self._expect_error(base + "/nope", 404)
 
-    def test_a_missing_dashboard_file_answers_500(self) -> None:
-        """_send_file reads from disk; the file can be deleted underneath it."""
+    def test_a_page_load_is_rebuilt_not_the_startup_snapshot(self) -> None:
+        """--serve writes dashboard.html once at startup. Serving that file
+        as-is meant every browser reload, days into a session, showed the
+        startup numbers until the next /api/data poll replaced them."""
+        stale = self._dashboard()
+        base = self._serve(lambda: None, stale)
+        with urllib.request.urlopen(base + "/", timeout=10) as res:
+            body = res.read().decode()
+        self.assertNotIn("<title>x</title>", body)
+        self.assertIn("generated_at", body)
+        self.assertEqual(stale.read_text(), body)
+
+    def test_a_missing_dashboard_file_is_recreated(self) -> None:
         base = self._serve(lambda: None, Path(tempfile.mkdtemp()) / "gone.html")
-        self._expect_error(base + "/", 500)
+        with urllib.request.urlopen(base + "/", timeout=10) as res:
+            self.assertEqual(res.status, 200)
 
     def test_rapid_refreshes_coalesce_into_one_collection(self) -> None:
         """Each open tab polls on its own timer, so without a floor N tabs mean

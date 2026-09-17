@@ -115,8 +115,10 @@ plain file (fetch fails, fallback reloads whatever's on disk) or served by
 
 ### Live serving (`aiusage/server.py`, `collect.py --serve`)
 
-Optional, off by default. A stdlib `ThreadingHTTPServer` serves the
-already-built `dashboard.html` at `/` and, on every `GET /api/data`, re-runs
+Optional, off by default. A stdlib `ThreadingHTTPServer` rebuilds
+`dashboard.html` from the DB on every `GET /` (without collecting — a startup
+snapshot would make every browser reload show stale numbers until the next
+poll) and, on every `GET /api/data`, re-runs
 `collect.run_sources()` and returns a fresh `dashboard.build_payload()` as
 JSON. Requests run one per thread, so the shared `sqlite3.Connection` is
 opened with `check_same_thread=False` and every access — collection and the
