@@ -2,9 +2,12 @@
 
 Not part of the default pipeline -- that stays static, per dashboard.py's own
 docstring. This just gives an already-open tab a way to pull fresh data
-without a human re-running ./collect.py: it serves the same dashboard.html
-collect.py just wrote, plus a /api/data endpoint that re-runs the collectors
-and returns the JSON payload dashboard.py would otherwise bake into the file.
+without a human re-running ./collect.py: it renders the dashboard page from
+the database on every request -- a --serve process left running for days
+would otherwise hand each new tab the snapshot it wrote at startup -- plus a
+/api/data endpoint that re-runs the collectors and returns the JSON payload
+dashboard.py would otherwise bake into the file.
+
 The page's own JS (see dashboard.py's TEMPLATE) polls that endpoint and
 re-renders in place.
 """
@@ -17,7 +20,6 @@ import threading
 import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Callable
 
 from . import dashboard
@@ -33,11 +35,10 @@ MIN_COLLECT_INTERVAL_S = 20.0
 def make_server(
     conn: sqlite3.Connection,
     collect_fn: Callable[[], int],   # returns the failure count, like run_sources
-    dashboard_path: Path,
     host: str,
     port: int,
     min_collect_interval: float = MIN_COLLECT_INTERVAL_S,
-    refresh_seconds: int = 60,
+    refresh_seconds: int = dashboard.DEFAULT_REFRESH_SECONDS,
 ) -> ThreadingHTTPServer:
     # Collection and the payload query both touch `conn`; a lock keeps
     # concurrent requests (e.g. a stray double-click on Refresh) from
@@ -75,11 +76,15 @@ def make_server(
             self.end_headers()
             self.wfile.write(body)
 
-        def _send_file(self, path: Path, content_type: str) -> None:
-            body = path.read_bytes()
+        def _send_html(self, html: str) -> None:
+            body = html.encode()
             self.send_response(200)
-            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            # Same reason as the JSON: a cached page would show the startup
+            # numbers again on the next reload, which is the bug this path
+            # exists to avoid.
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -96,15 +101,18 @@ def make_server(
                     self._send_json(payload)
                     return
                 if self.path in ("/", "/dashboard.html"):
-                    # Rebuild from the database rather than serving the file
+                    # Render from the database rather than serving the file
                     # written at startup: a long-running --serve would
                     # otherwise hand every browser reload that old snapshot,
                     # and the tab would show days-stale numbers until its next
-                    # /api/data poll replaced them. Not collecting here keeps
-                    # page loads fast; the poll does that.
+                    # /api/data poll replaced them. Rendered in memory, never
+                    # through the dashboard file -- a page load should not depend
+                    # on that file being writable, nor race the scheduled
+                    # collect.py writing it. Not collecting here keeps page
+                    # loads fast; the poll does that.
                     with lock:
-                        dashboard.build(conn, dashboard_path, refresh_seconds)
-                        self._send_file(dashboard_path, "text/html; charset=utf-8")
+                        html = dashboard.render(conn, refresh_seconds)
+                    self._send_html(html)
                     return
                 self.send_error(404)
             except Exception as e:

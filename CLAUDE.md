@@ -95,9 +95,16 @@ in this tool is a computed estimate, since neither subscription is billed per to
 
 Aggregates `usage_event` in SQL, prices it, then serializes one JSON payload
 (`build_payload()`) directly into `dashboard.html` as `DATA = {...}` — no build
-step, no network needed to view it. Model series beyond `MAX_MODEL_SERIES` (8)
-fold into "Other"; provider→color slot is fixed (`PROVIDER_SLOT`) so adding a
-third provider never repaints the first two.
+step, no network needed to view it. `render()` returns that page as a string
+and `build()` writes it; the split exists so `--serve` can answer a request
+without a disk round-trip. `build()` writes through a temp file and
+`os.replace`, because several processes write the same path (the launchd
+schedule, a manual `./collect.py`, `--serve`'s startup build) and a plain
+write would let a reader see a half-written page.
+
+Model series beyond `MAX_MODEL_SERIES` (8) fold into "Other"; provider→color
+slot is fixed (`PROVIDER_SLOT`) so adding a third provider never repaints the
+first two.
 
 Clicking a row in the "By month" table drills into that month
 (`#month=YYYY-MM` in the hash — bookmarkable, survives auto-refresh). The
@@ -115,13 +122,20 @@ plain file (fetch fails, fallback reloads whatever's on disk) or served by
 
 ### Live serving (`aiusage/server.py`, `collect.py --serve`)
 
-Optional, off by default. A stdlib `ThreadingHTTPServer` rebuilds
-`dashboard.html` from the DB on every `GET /` (without collecting — a startup
-snapshot would make every browser reload show stale numbers until the next
-poll) and, on every `GET /api/data`, re-runs
-`collect.run_sources()` and returns a fresh `dashboard.build_payload()` as
-JSON. Requests run one per thread, so the shared `sqlite3.Connection` is
-opened with `check_same_thread=False` and every access — collection and the
+Optional, off by default. A stdlib `ThreadingHTTPServer` answers `GET /` with
+`dashboard.render()` — the page built from the DB right then, in memory — and,
+on every `GET /api/data`, re-runs `collect.run_sources()` and returns a fresh
+`dashboard.build_payload()` as JSON. Rendering per request is the point: the
+server used to send the `dashboard.html` written at startup, so a `--serve`
+left running for days handed every new tab that snapshot until its first poll
+replaced it. Fixing it client-side (fetching on load) is not an option — the
+page's no-answer fallback is `location.reload()`, so a `file://` open would
+reload-loop forever. `GET /` deliberately does *not* collect (the poll owns
+that) and never touches the dashboard file, so a page load cannot fail on an
+unwritable directory or race a scheduled `collect.py` writing that path.
+
+Requests run one per thread, so the shared `sqlite3.Connection` is opened with
+`check_same_thread=False` and every access — collection and the
 payload query alike — is serialized behind one `threading.Lock` in
 `server.py`. This is the only path in the codebase where the DB connection is
 touched from more than one thread.

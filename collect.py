@@ -110,9 +110,7 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
     return failures
 
 
-def main() -> int:
-    load_env(ROOT / ".env")
-
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Collect AI usage from all configured sources.")
     ap.add_argument("--no-dashboard", action="store_true", help="skip regenerating dashboard.html")
     ap.add_argument("--status", action="store_true", help="print a summary and exit")
@@ -130,10 +128,18 @@ def main() -> int:
                          "been fully ingested; add --yes to delete them")
     ap.add_argument("--yes", action="store_true",
                     help="with --prune, actually delete instead of listing")
+    # Spelled as a literal, not dashboard.DEFAULT_REFRESH_SECONDS: dashboard is
+    # imported lazily in main(), well after argparse runs. test_collect keeps
+    # the two in step.
     ap.add_argument("--interval", type=int, default=60,
                     help="seconds between auto-refreshes while the dashboard tab "
                          "is left open (default 60)")
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    load_env(ROOT / ".env")
+    args = build_parser().parse_args()
 
     db_path = _expand(os.environ.get("AIU_DB", str(ROOT / "data" / "usage.db")))
     archive_dir = _expand(os.environ.get("AIU_ARCHIVE", str(ROOT / "data" / "archive")))
@@ -171,7 +177,7 @@ def main() -> int:
         collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
                                           codex_archive_dir, args.only, quiet=True,
                                           triggered_by="serve")
-        httpd = server.make_server(conn, collect_fn, out_html, "127.0.0.1", args.port,
+        httpd = server.make_server(conn, collect_fn, "127.0.0.1", args.port,
                                    refresh_seconds=args.interval)
         url = f"http://127.0.0.1:{args.port}/"
         print(f"  serving                {url}  (Ctrl+C to stop, re-collects every "

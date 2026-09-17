@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 import collect
+from aiusage import dashboard
 
 
 class PathResolutionTests(unittest.TestCase):
@@ -52,3 +53,13 @@ class LoadEnvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArgumentDefaultTests(unittest.TestCase):
+    def test_the_interval_default_matches_the_dashboard_constant(self) -> None:
+        """collect.py spells the --interval default as a literal, because
+        dashboard is imported lazily inside main(), well after argparse runs.
+        Nothing else would notice the two drifting apart."""
+        parser = collect.build_parser()
+        self.assertEqual(parser.get_default("interval"),
+                         dashboard.DEFAULT_REFRESH_SECONDS)
