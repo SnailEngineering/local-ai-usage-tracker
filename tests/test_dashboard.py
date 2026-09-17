@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from aiusage import dashboard, db
@@ -106,3 +107,50 @@ class DashboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuildWriteTests(unittest.TestCase):
+    def _conn(self, tmp: str):
+        conn = db.connect(Path(tmp) / "t.db")
+        db.upsert_usage(conn, [_event()])
+        conn.commit()
+        return conn
+
+    def test_the_page_is_swapped_in_atomically_leaving_no_temp_behind(self) -> None:
+        """More than one process writes this path -- the launchd schedule, a
+        manual ./collect.py. A plain write lets a reader see a half-written
+        page, so build() renames a temp file into place instead."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp)
+            out = Path(tmp) / "sub" / "dashboard.html"
+
+            dashboard.build(conn, out)
+            self.assertIn("<title>AI Usage</title>", out.read_text())
+
+            dashboard.build(conn, out)   # overwriting an existing page works
+            self.assertIn("<title>AI Usage</title>", out.read_text())
+
+            self.assertEqual([p.name for p in out.parent.iterdir()],
+                             ["dashboard.html"], "a temp file was left behind")
+
+    def test_a_write_that_dies_before_the_rename_keeps_the_old_page(self) -> None:
+        """The rename is the commit point. Writing the page in place instead
+        would truncate it first, so a crash mid-write leaves a reader -- a
+        browser on file://, the next --serve -- with half a document."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp)
+            out = Path(tmp) / "dashboard.html"
+            dashboard.build(conn, out)
+            good = out.read_text()
+
+            # Fails after the content is written, before it is swapped in --
+            # exactly the window a plain write_text has no answer for.
+            with mock.patch.object(dashboard.os, "replace",
+                                   side_effect=OSError("no space left on device")):
+                with self.assertRaises(OSError):
+                    dashboard.build(conn, out)
+
+            self.assertEqual(out.read_text(), good, "the previous page was lost")
+            leftovers = [p.name for p in out.parent.iterdir()
+                         if p.name.startswith("dashboard.html.")]
+            self.assertEqual(leftovers, [], "a temp file was left behind")

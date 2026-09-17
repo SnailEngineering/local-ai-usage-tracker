@@ -10,12 +10,19 @@ workflow stays a plain file on disk.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import pricing
+
+
+# Seconds between the page's own auto-refreshes. Defined here, next to the
+# template that consumes it, so collect.py's --interval default and server.py
+# do not each carry their own copy of the number.
+DEFAULT_REFRESH_SECONDS = 60
 
 # Fixed provider -> categorical slot. Colour follows the entity, so adding a
 # third provider never repaints the first two.
@@ -254,18 +261,40 @@ def build_payload(conn: sqlite3.Connection) -> dict:
     }
 
 
-def build(conn: sqlite3.Connection, out_path: Path, refresh_seconds: int = 60) -> Path:
+def render(conn: sqlite3.Connection,
+           refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> str:
+    """The whole page as a string. Split out from `build` so `--serve` can
+    answer a request without a disk round-trip -- writing the file just to
+    read it back would put a page load at the mercy of an unwritable
+    directory, and would race the scheduled `collect.py` writing the same
+    path from another process."""
     payload = build_payload(conn)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     # The payload is spliced into an inline <script>, where the HTML parser wins
     # over the JS one: a project directory literally named `</script>...` would
     # otherwise close the block early and inject live markup. Escaping `<` keeps
     # the JSON valid and identical once parsed.
     data = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
-    html = (TEMPLATE
+    return (TEMPLATE
             .replace("__DATA__", data)
             .replace("__REFRESH_MS__", str(refresh_seconds * 1000)))
-    out_path.write_text(html, encoding="utf-8")
+
+
+def build(conn: sqlite3.Connection, out_path: Path,
+          refresh_seconds: int = DEFAULT_REFRESH_SECONDS) -> Path:
+    html = render(conn, refresh_seconds)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Written through a temp file in the same directory and renamed, because
+    # more than one process writes this path -- the launchd schedule, a manual
+    # ./collect.py, a --serve startup. A plain write_text lets a reader (a
+    # browser on file://, another collector) see a half-written page; the
+    # rename is atomic, so a reader sees either the old file or the new one.
+    tmp = out_path.with_name(out_path.name + f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(html, encoding="utf-8")
+        os.replace(tmp, out_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     return out_path
 
 
