@@ -626,17 +626,22 @@ function renderAll(app) {
   const T = DATA.totals;
   const cacheShare = T.total_tokens ? (T.cache_read / T.total_tokens * 100) : 0;
   const span = DATA.days[0] + ' → ' + DATA.days[DATA.days.length - 1];
+  // Days recovered from the stats cache sit outside every headline figure --
+  // no input/output/cache split, so no price -- and the tiles say so rather
+  // than let "Tokens" and "Active days" read as the whole history.
+  const cDays = DATA.coarse.length;
+  const cTok = DATA.coarse.reduce((s, c) => s + c.tokens, 0);
 
   let html = `
   <div class="tiles">
     <div class="tile"><div class="k">Total cost</div><div class="v">${usd2(T.cost_usd)}</div>
       <div class="n">${span}</div></div>
-    <div class="tile"><div class="k">Tokens</div><div class="v">${tok(T.total_tokens)}</div>
-      <div class="n">${num(T.events)} messages</div></div>
+    <div class="tile"><div class="k">Detailed tokens</div><div class="v">${tok(T.total_tokens)}</div>
+      <div class="n">${num(T.events)} messages${cDays ? ` · +~${tok(cTok)} earlier, unsplit` : ''}</div></div>
     <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
-      <div class="n">of all tokens</div></div>
-    <div class="tile"><div class="k">Active days</div><div class="v">${T.active_days}</div>
-      <div class="n">${usd2(T.cost_usd / Math.max(T.active_days, 1))} / day</div></div>
+      <div class="n">of detailed tokens</div></div>
+    <div class="tile"><div class="k">Days with detail</div><div class="v">${T.active_days}</div>
+      <div class="n">${usd2(T.cost_usd / Math.max(T.active_days, 1))} / day${cDays ? ` · +${cDays} earlier` : ''}</div></div>
   </div>
 
   <div class="tiles">
