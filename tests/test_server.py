@@ -81,6 +81,47 @@ class ServerTests(unittest.TestCase):
         with urllib.request.urlopen(base + "/", timeout=10) as res:
             self.assertEqual(res.status, 200)
 
+    def test_a_source_failure_the_collector_returns_is_reported_not_swallowed(self) -> None:
+        """run_sources() catches each source's exception and returns a count --
+        it does not raise. Without reading that count the poll answered a
+        clean 200 and the page never said a source had failed."""
+        base = self._serve(lambda: 1)
+        with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+            self.assertEqual(res.status, 200)  # the payload is still good
+            payload = json.loads(res.read())
+        self.assertIn("1 source failed", payload["refresh_error"])
+
+    def test_a_clean_collection_reports_no_error(self) -> None:
+        base = self._serve(lambda: 0)
+        with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+            self.assertIsNone(json.loads(res.read())["refresh_error"])
+
+    def test_a_throttled_request_still_reports_the_last_failure(self) -> None:
+        """Only the first request in a burst collects. The rest must not read
+        as healthy just because they did not run the collector themselves."""
+        base = self._serve(lambda: 2, min_interval=30.0)
+        for _ in range(3):
+            with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+                self.assertIn("2 sources failed", json.loads(res.read())["refresh_error"])
+
+    def test_the_error_clears_once_a_collection_succeeds(self) -> None:
+        results = iter([1, 0])
+        base = self._serve(lambda: next(results))
+        seen = []
+        for _ in range(2):
+            with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+                seen.append(json.loads(res.read())["refresh_error"])
+        self.assertIsNotNone(seen[0])
+        self.assertIsNone(seen[1])
+
+    def test_the_written_page_does_not_carry_the_polls_error(self) -> None:
+        path = Path(tempfile.mkdtemp()) / "dashboard.html"
+        base = self._serve(lambda: 1, dashboard_path=path)
+        with urllib.request.urlopen(base + "/api/data", timeout=10) as res:
+            res.read()
+        # The key in JSON form: the page's own JS mentions the name.
+        self.assertNotIn('"refresh_error":', self._written(path, "DATA = "))
+
     def test_a_healthy_request_returns_the_payload_uncached(self) -> None:
         base = self._serve(lambda: None)
         with urllib.request.urlopen(base + "/api/data", timeout=10) as res:

@@ -52,16 +52,28 @@ def make_server(
     # builds and time since process start under others -- a 0.0 sentinel
     # silently suppresses the very first collection on the latter.
     last_collect: list[float | None] = [None]
+    # What the most recent collection reported, kept until the next one
+    # replaces it. Throttled requests skip collecting, and a failure they never
+    # saw must not read as a success just because they came second.
+    last_error: list[str | None] = [None]
 
-    def collect_if_due() -> None:
+    def collect_if_due() -> str | None:
         """Collect unless one just ran. Held under `lock`, so a burst of
         refreshes coalesces into one collection and the rest simply read the
-        database it just wrote."""
+        database it just wrote. Returns the last collection's failure summary,
+        or None if it was clean.
+
+        run_sources() catches each source's exception and returns a count
+        instead of raising, so the return value -- not a try/except -- is how a
+        failed source reaches here."""
         previous = last_collect[0]
         if previous is not None and time.monotonic() - previous < min_collect_interval:
-            return
-        collect_fn()
+            return last_error[0]
+        failures = collect_fn() or 0
         last_collect[0] = time.monotonic()
+        last_error[0] = (f"{failures} source{'s' if failures != 1 else ''} failed"
+                         " (see the run log)") if failures else None
+        return last_error[0]
 
     def write_through(html: str) -> None:
         """Keep the on-disk dashboard.html in step with what we just served,
@@ -117,12 +129,17 @@ def make_server(
             try:
                 if self.path == "/api/data":
                     with lock:
-                        collect_if_due()
+                        refresh_error = collect_if_due()
                         payload = dashboard.build_payload(conn)
-                    self._send_json(payload)
+                    # 200, not 500: the other source's rows are in the database
+                    # and the payload is good. The key is always present so a
+                    # later clean poll overwrites a stale warning client-side.
+                    self._send_json({**payload, "refresh_error": refresh_error})
                     # The poll, not the page load, is what picks up new data
                     # over a long session -- so it is what keeps the file
-                    # current. Rendered from the payload already in hand.
+                    # current. Rendered from the payload already in hand --
+                    # without refresh_error, which describes this poll, not
+                    # the page a later file:// open would show.
                     write_through(dashboard.render_payload(payload, refresh_seconds))
                     return
                 if self.path in ("/", "/dashboard.html"):
