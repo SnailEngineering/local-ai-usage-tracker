@@ -155,10 +155,45 @@ class ClaudeIngestTests(unittest.TestCase):
         conn, archive = self._ingest(
             json.dumps(_assistant(1, 5)).encode() + b"\n")
         db.set_state(conn, "cc_offset:s.jsonl", "12", "now")
-        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (12, None))
+        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (12, None, None, 0))
 
         db.set_state(conn, "cc_offset:s.jsonl", "not-a-number", "now")
-        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (0, None))
+        self.assertEqual(cc._read_state(conn, "cc_offset:s.jsonl"), (0, None, None, 0))
+
+    def test_a_rewrite_that_grows_the_file_is_reread_from_the_top(self) -> None:
+        """A rewrite that ends up longer than before looks exactly like an
+        append to size and mtime, so ingest resumed mid-file and never saw the
+        changed prefix. The hash of the file's head is what gives it away."""
+        def blob(*events: dict) -> bytes:
+            return b"".join(json.dumps(e).encode() + b"\n" for e in events)
+
+        conn, archive = self._ingest(blob(_assistant(1, 5), _assistant(2, 5)))
+        cc.ingest(conn, archive, "now")
+
+        # A plain append leaves the prefix alone: not a rewrite.
+        (archive / "s.jsonl").write_bytes(
+            blob(_assistant(1, 5), _assistant(2, 5), _assistant(3, 5)))
+        self.assertEqual(cc.ingest(conn, archive, "now")["rewritten"], 0)
+
+        # Same file, first message changed, and longer overall.
+        (archive / "s.jsonl").write_bytes(
+            blob(_assistant(1, 9000), _assistant(2, 5), _assistant(3, 5), _assistant(4, 5)))
+        stats = cc.ingest(conn, archive, "now")
+
+        self.assertEqual(stats["rewritten"], 1)
+        rows = {r["id"]: r["input_tokens"]
+                for r in conn.execute("SELECT id, input_tokens FROM usage_event")}
+        self.assertEqual(sorted(rows.values()), [5, 5, 5, 9000])
+
+    def test_state_from_before_the_fingerprint_existed_is_not_a_rewrite(self) -> None:
+        """Rows written by an older version carry no head hash. That must read
+        as "nothing to compare", not as a mismatch that re-ingests every file."""
+        conn, archive = self._ingest(
+            json.dumps(_assistant(1, 5)).encode() + b"\n" + json.dumps(_assistant(2, 5)).encode() + b"\n")
+        size = (archive / "s.jsonl").stat().st_size
+        db.set_state(conn, "cc_offset:s.jsonl", json.dumps({"offset": size // 2}), "now")
+        (archive / "s.jsonl").write_bytes((archive / "s.jsonl").read_bytes())
+        self.assertEqual(cc.ingest(conn, archive, "now")["rewritten"], 0)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,6 @@ Two details that matter:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -27,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
+from .fingerprint import HEAD_BYTES, head_hash
 
 SOURCE = "codex_local"
 PROVIDER = "openai"
@@ -61,21 +61,6 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
         copied += 1
 
     return (copied, total)
-
-
-# Bytes of each file hashed to notice a rewrite. Size and mtime miss the case
-# that matters most: a rewrite that also *grows* the file looks exactly like an
-# append, so the changed prefix is never re-read.
-HEAD_BYTES = 4096
-
-
-def _head_hash(path: Path, n: int) -> tuple[str, int]:
-    """Hash the first `n` bytes. Returns (digest, bytes_actually_read), so a
-    file shorter than `n` records how much it covered rather than a digest that
-    would change on the next append."""
-    with path.open("rb") as fh:
-        head = fh.read(n)
-    return (hashlib.sha256(head).hexdigest()[:16], len(head))
 
 
 def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None, str | None, int]:
@@ -117,7 +102,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         # append (which leaves the prefix untouched) never looks like a rewrite.
         rewritten = size < offset or (size == offset and saved_mtime is not None)
         if not rewritten and saved_head is not None:
-            rewritten = _head_hash(path, saved_head_len)[0] != saved_head
+            rewritten = head_hash(path, saved_head_len)[0] != saved_head
 
         if rewritten:
             # Codex ids are positional (`codex:<session>:<seq>`), so replaying a
@@ -203,7 +188,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     continue
                 batch.append(row)
 
-        head, head_len = _head_hash(path, HEAD_BYTES)
+        head, head_len = head_hash(path, HEAD_BYTES)
         db.set_state(conn, state_key, json.dumps({
             "offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns,
             "head": head, "head_len": head_len,

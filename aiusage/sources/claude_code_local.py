@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
+from .fingerprint import HEAD_BYTES, head_hash
 
 SOURCE = "claude_code_local"
 PROVIDER = "anthropic"
@@ -117,31 +118,36 @@ def _usage_row(rec: dict, now: str) -> dict | None:
     }
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int | None]:
-    """Read the incremental offset and archived-file mtime.
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int | None, str | None, int]:
+    """Read the incremental offset, archived-file mtime, and head fingerprint
+    (hash, bytes covered).
 
     Older databases stored a plain integer offset. Keep accepting that format
     so an upgrade does not force a full re-ingest.
     """
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, None)
+        return (0, None, None, 0)
     try:
         state = json.loads(raw)
         if isinstance(state, dict):
             mtime = state.get("mtime_ns")
-            return (int(state.get("offset", 0)), int(mtime) if mtime is not None else None)
+            head = state.get("head")
+            return (int(state.get("offset", 0)),
+                    int(mtime) if mtime is not None else None,
+                    str(head) if head else None, int(state.get("head_len", 0)))
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
     try:
-        return (int(raw), None)
+        return (int(raw), None, None, 0)
     except ValueError:
-        return (0, None)
+        return (0, None, None, 0)
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     """Parse archived JSONL from the last read offset of each file."""
-    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0}
+    stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0,
+             "rewritten": 0}
     if not archive_dir.is_dir():
         return stats
 
@@ -151,14 +157,24 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"cc_offset:{rel}"
-        offset, saved_mtime = _read_state(conn, state_key)
+        offset, saved_mtime, saved_head, saved_head_len = _read_state(conn, state_key)
         stat = path.stat()
         size = stat.st_size
 
         if size == offset and (saved_mtime is None or saved_mtime == stat.st_mtime_ns):
             continue
-        if size < offset or (size == offset and saved_mtime is not None):
-            offset = 0  # file was rewritten; start over, PK dedupe absorbs it
+        rewritten = size < offset or (size == offset and saved_mtime is not None)
+        if not rewritten and saved_head is not None:
+            # Same number of bytes the last run hashed, so a plain append
+            # (which leaves the prefix alone) never looks like a rewrite.
+            rewritten = head_hash(path, saved_head_len)[0] != saved_head
+        if rewritten:
+            # Start over. Ids are deterministic, so the replay is a no-op for
+            # what survived; unlike Codex there is nothing to delete first --
+            # a message that vanished from the rewrite is history this tool
+            # exists to keep, not stale usage.
+            offset = 0
+            stats["rewritten"] += 1
 
         stats["files_read"] += 1
         # Read bytes, not text. `offset` is a byte position, and decoding first
@@ -203,8 +219,11 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                 stats["events"] += db.upsert_usage(conn, batch)
                 batch = []
 
-        db.set_state(conn, state_key,
-                     json.dumps({"offset": offset, "mtime_ns": stat.st_mtime_ns}), now)
+        head, head_len = head_hash(path, HEAD_BYTES)
+        db.set_state(conn, state_key, json.dumps({
+            "offset": offset, "mtime_ns": stat.st_mtime_ns,
+            "head": head, "head_len": head_len,
+        }), now)
 
     stats["events"] += db.upsert_usage(conn, batch)
     return stats
