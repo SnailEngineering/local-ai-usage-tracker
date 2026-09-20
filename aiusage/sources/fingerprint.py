@@ -1,23 +1,24 @@
-"""Notice that an archived JSONL was rewritten rather than appended to.
-
-Size and mtime miss the case that matters most: a rewrite that also *grows* the
-file looks exactly like an append, so the changed prefix is never re-read.
-Hashing the file's first bytes catches it -- an append leaves them untouched.
-Shared by both sources' incremental ingest.
-"""
+"""Hash the complete ingested prefix to distinguish appends from rewrites."""
 
 from __future__ import annotations
 
 import hashlib
 from pathlib import Path
 
-HEAD_BYTES = 4096
 
+def prefix_hash(path: Path, n: int) -> tuple[str, int]:
+    """Return (SHA-256, bytes read), using bounded memory even for large files.
 
-def head_hash(path: Path, n: int) -> tuple[str, int]:
-    """Hash the first `n` bytes. Returns (digest, bytes_actually_read), so a
-    file shorter than `n` records how much it covered rather than a digest that
-    would change on the next append."""
+    Hash only committed, complete lines (the saved offset), so completing a
+    partial trailing line never invalidates the previously ingested prefix.
+    """
+    digest = hashlib.sha256()
+    remaining = n
     with path.open("rb") as fh:
-        head = fh.read(n)
-    return (hashlib.sha256(head).hexdigest()[:16], len(head))
+        while remaining:
+            chunk = fh.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+    return digest.hexdigest(), n - remaining

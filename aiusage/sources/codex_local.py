@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
-from .fingerprint import HEAD_BYTES, head_hash
+from .fingerprint import prefix_hash
 from .validation import object_value, text_value, token_value
 
 SOURCE = "codex_local"
@@ -71,10 +71,10 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | Non
     try:
         d = json.loads(raw)
         mtime = d.get("mtime_ns")
-        head = d.get("head")
+        head = d.get("prefix_hash")
         return (int(d.get("offset", 0)), int(d.get("seq", 0)),
                 int(mtime) if mtime is not None else None,
-                str(head) if head else None, int(d.get("head_len", 0)))
+                str(head) if head else None, int(d.get("prefix_len", 0)))
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
         return (0, 0, None, None, 0)
 
@@ -91,19 +91,21 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        offset, seq, saved_mtime, saved_head, saved_head_len = _read_state(conn, state_key)
+        offset, seq, saved_mtime, saved_prefix, saved_prefix_len = _read_state(conn, state_key)
         stat = path.stat()
         size = stat.st_size
 
-        if size == offset and (saved_mtime is None or saved_mtime == stat.st_mtime_ns):
+        if (size == offset and saved_prefix is not None
+                and saved_prefix_len == offset and saved_mtime == stat.st_mtime_ns):
             continue
 
         session_id = path.stem
-        # Compare the same number of bytes the previous run hashed, so a plain
-        # append (which leaves the prefix untouched) never looks like a rewrite.
-        rewritten = size < offset or (size == offset and saved_mtime is not None)
-        if not rewritten and saved_head is not None:
-            rewritten = head_hash(path, saved_head_len)[0] != saved_head
+        # Verify every previously ingested byte. Legacy head-only fingerprints
+        # cannot prove the prefix is unchanged, so replay those files once.
+        rewritten = (size < offset or (size == offset and saved_mtime is not None)
+                     or (offset > 0 and (saved_prefix is None or saved_prefix_len != offset)))
+        if not rewritten and saved_prefix is not None:
+            rewritten = prefix_hash(path, saved_prefix_len) != (saved_prefix, saved_prefix_len)
 
         if rewritten:
             # Codex ids are positional (`codex:<session>:<seq>`), so replaying a
@@ -186,10 +188,10 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     continue
                 batch.append(row)
 
-        head, head_len = head_hash(path, HEAD_BYTES)
+        digest, prefix_len = prefix_hash(path, offset)
         db.set_state(conn, state_key, json.dumps({
             "offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns,
-            "head": head, "head_len": head_len,
+            "prefix_hash": digest, "prefix_len": prefix_len,
         }), now)
 
         if len(batch) >= 2000:

@@ -70,8 +70,10 @@ duplicates.
   footnote and never enters cost math.
 - `ingest_state` — offsets/cursors keyed by `source:relative_path`, the
   incremental-read bookkeeping. Values are JSON: `offset` plus `mtime_ns`, a
-  `head`/`head_len` hash of the file's first 4KB (`sources/fingerprint.py`, how
-  a rewrite that grows the file is told from an append), and for Codex also `seq`.
+  `prefix_hash`/`prefix_len` SHA-256 of all bytes through that offset
+  (`sources/fingerprint.py`, how growing rewrites are distinguished from
+  appends), and for Codex also `seq`. Legacy offsets/head-only hashes are
+  replayed once to establish the complete fingerprint.
   Offsets are **byte** positions, so both ingesters read the files in binary —
   decoding first would let CRLF or an undecodable byte desync them permanently.
 - `run_log` — append-only, so a silently failing cron job is visible via

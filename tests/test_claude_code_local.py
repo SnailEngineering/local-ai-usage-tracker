@@ -185,15 +185,15 @@ class ClaudeIngestTests(unittest.TestCase):
                 for r in conn.execute("SELECT id, input_tokens FROM usage_event")}
         self.assertEqual(sorted(rows.values()), [5, 5, 5, 9000])
 
-    def test_state_from_before_the_fingerprint_existed_is_not_a_rewrite(self) -> None:
-        """Rows written by an older version carry no head hash. That must read
-        as "nothing to compare", not as a mismatch that re-ingests every file."""
+    def test_legacy_state_is_replayed_to_establish_a_complete_fingerprint(self) -> None:
+        """Legacy offsets cannot verify the entire prefix and need one replay."""
         conn, archive = self._ingest(
             json.dumps(_assistant(1, 5)).encode() + b"\n" + json.dumps(_assistant(2, 5)).encode() + b"\n")
         size = (archive / "s.jsonl").stat().st_size
         db.set_state(conn, "cc_offset:s.jsonl", json.dumps({"offset": size // 2}), "now")
         (archive / "s.jsonl").write_bytes((archive / "s.jsonl").read_bytes())
-        self.assertEqual(cc.ingest(conn, archive, "now")["rewritten"], 0)
+        self.assertEqual(cc.ingest(conn, archive, "now")["rewritten"], 1)
+        self.assertEqual(cc.ingest(conn, archive, "now")["files_read"], 0)
 
     def test_the_full_working_directory_is_stored_beside_its_basename(self) -> None:
         conn, archive = self._ingest(json.dumps(_assistant(1, 5)).encode() + b"\n")
