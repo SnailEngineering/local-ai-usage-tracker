@@ -452,6 +452,24 @@ TEMPLATE = r"""<!doctype html>
   details.runs summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
   details.runs table { margin-top:10px; }
   .ok { color:var(--s6); } .err { color:var(--s8); }
+
+  /* Phone width. The tile grid's 168px minimum needs 350px for two columns and
+     a 390px viewport minus the page gutters offers 342, so every tile fell into
+     one tall column and pushed the first chart several screens down. Two
+     compact columns fit; an odd tile left over spans the row instead of
+     stranding a gap. */
+  @media (max-width: 600px) {
+    body { padding:20px 16px 48px; }
+    header { margin-bottom:20px; }
+    .stamp { margin-left:0; flex-basis:100%; }
+    .card { padding:16px 14px; }
+    .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+    .tile { padding:12px 13px; }
+    .tile .k { font-size:11px; letter-spacing:.04em; }
+    .tile .v { font-size:21px; margin-top:4px; }
+    .tile .n { font-size:11.5px; }
+    .tiles .tile:last-child:nth-child(odd) { grid-column:1 / -1; }
+  }
 </style>
 </head>
 <body>
@@ -514,6 +532,11 @@ function stackedBars(el, opts) {
        + `<text class="tick" x="${padL - 8}" y="${(y(t) + 4).toFixed(1)}" text-anchor="end">${fmt(t)}</text>`;
   }
 
+  // The 2px surface-coloured stroke is what separates stacked segments, but on
+  // a bar narrower than a few pixels (a phone, a long range) it is wider than
+  // the bar and paints over the whole fill -- the chart came out blank. Narrow
+  // bars go without it.
+  const gap = bw < 5 ? ' style="stroke-width:0"' : '';
   let bars = '';
   days.forEach((d, i) => {
     let acc = 0;
@@ -524,7 +547,7 @@ function stackedBars(el, opts) {
       // 2px surface gap between stacked segments; rounded data-end on the top one.
       bars += `<rect class="seg" x="${(x(i) - bw / 2).toFixed(1)}" y="${y0.toFixed(1)}"
                width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="${Math.min(4, bw / 2).toFixed(1)}"
-               fill="${colorOf(k, slots)}"/>`;
+               fill="${colorOf(k, slots)}"${gap}/>`;
       acc += v;
     });
   });
@@ -533,7 +556,10 @@ function stackedBars(el, opts) {
   let ticks = '';
   const every = Math.max(1, Math.ceil(days.length / 7));
   days.forEach((d, i) => {
-    if (i % every === 0 || i === days.length - 1) {
+    // The last day is always labelled, so drop the regular tick just before it
+    // rather than print two dates on top of each other.
+    const last = days.length - 1;
+    if ((i % every === 0 && (last - i >= every * 0.6 || i === last)) || i === last) {
       ticks += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${tickFmt(d)}</text>`;
     }
   });
@@ -637,7 +663,7 @@ function renderAll(app) {
     <div class="tile"><div class="k">Total cost</div><div class="v">${usd2(T.cost_usd)}</div>
       <div class="n">${span}</div></div>
     <div class="tile"><div class="k">Detailed tokens</div><div class="v">${tok(T.total_tokens)}</div>
-      <div class="n">${num(T.events)} messages${cDays ? ` · +~${tok(cTok)} earlier, unsplit` : ''}</div></div>
+      <div class="n">${num(T.events)} messages${cDays ? ` · +${tok(cTok)} earlier, unsplit` : ''}</div></div>
     <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
       <div class="n">of detailed tokens</div></div>
     <div class="tile"><div class="k">Days with detail</div><div class="v">${T.active_days}</div>
