@@ -478,8 +478,8 @@ TEMPLATE = r"""<!doctype html>
     border-top:1px solid var(--border); padding-top:10px; }
   .provider-part { min-width:0; display:flex; flex-direction:column; gap:2px; }
   .provider-part:last-child { text-align:right; }
-  .provider-name { color:var(--muted); font-size:11px; }
-  .provider-value { color:var(--ink-2); font-size:13px; font-weight:600;
+  .provider-name { color:var(--provider-color); font-size:11px; }
+  .provider-value { color:var(--provider-color); font-size:13px; font-weight:600;
     font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 
 
@@ -763,7 +763,7 @@ function providerSplit(summaries, metric) {
   return `<div class="provider-footer"><div class="provider-split" title="${esc(hints[metric])}">
     ${[['anthropic', 'Claude'], ['openai', 'ChatGPT']].map(([key, label]) => {
       const summary = (summaries || {})[key];
-      return `<div class="provider-part"><span class="provider-name">${label}</span>
+      return `<div class="provider-part" style="--provider-color:${colorOf(key, DATA.provider_slot)}"><span class="provider-name">${label}</span>
         <span class="provider-value">${summary ? value(summary) : '—'}</span></div>`;
     }).join('')}
   </div></div>`;
