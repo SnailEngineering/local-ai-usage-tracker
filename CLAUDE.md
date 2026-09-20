@@ -36,7 +36,10 @@ cwd (`collect._expand`), so the installed aliases behave the same from anywhere.
 shared SQLite table, then `aiusage/dashboard.py` queries that table and
 renders a single static `dashboard.html`. Every stage is wrapped so one
 source's exception (`aiusage/db.py` rollback + `run_log` entry) never blocks
-the other.
+the other. `aiusage/locking.py` holds a persistent `.aiusage.lock` in each
+archive using `flock`. `run_sources()` locks each source from before archiving
+through its database commit or rollback; pruning uses the same locks. Source
+`run()`/`archive()`/`ingest()` helpers rely on this caller-owned lock.
 
 Both live in `aiusage/sources/` and need no credentials — `claude_code_local.py`
 reads Claude Code's `~/.claude/projects/*.jsonl`, `codex_local.py` reads Codex's
@@ -182,8 +185,11 @@ the tab. Failures return a 500 the page reports in place instead.
 The archive never shrinks on its own. `--prune DAYS` lists archived files older
 than the cutoff; `--yes` deletes them. A file is only prunable when
 `ingest_state` holds an offset for it *equal to its current size* — proof the
-last run consumed every byte — so a partially-read file is never dropped. The
-state row is deleted with the file, and re-archiving simply re-ingests (every
+last run consumed every byte — and its complete prefix hash and mtime must
+still match. Legacy offsets require collection before pruning. Deletion locks
+the affected archives and rechecks the survey's file identity, size, timestamps,
+ingest state, and fingerprint before unlinking. Directory cleanup stops at the
+archive root and leaves the persistent lock file in place. The state row is deleted with the file, and re-archiving simply re-ingests (every
 primary key is deterministic, so a replay is a no-op).
 
 ### Adding a new source

@@ -16,8 +16,11 @@ file is prunable only when all three hold:
 
   * it is older than the cutoff,
   * `ingest_state` has an offset for it, and
-  * that offset equals the file's current size -- meaning the last run
-    consumed every byte, with no partial trailing line outstanding.
+  * that offset equals the file's current size, and its complete prefix
+    fingerprint still matches the bytes on disk.
+
+Deletion revalidates the survey under the same archive lock held by collectors
+through their database commit. Legacy state needs a collection before pruning.
 
 Anything else is reported with the reason it was kept, rather than removed.
 """
@@ -30,6 +33,8 @@ import time
 from pathlib import Path
 
 from . import db
+from .locking import archive_locks
+from .sources.fingerprint import prefix_hash
 
 # state-key prefix -> the archive directory those keys are relative to
 STATE_PREFIXES = {"claude_code_local": "cc_offset", "codex_local": "codex_offset"}
@@ -55,19 +60,48 @@ def _offset_of(raw: str | None) -> int | None:
 class Candidate:
     """One archived file and what we decided about it."""
 
-    __slots__ = ("path", "state_key", "size", "age_days", "reason")
+    __slots__ = ("path", "state_key", "size", "age_days", "reason",
+                 "archive_root", "signature", "state")
 
     def __init__(self, path: Path, state_key: str, size: int, age_days: float,
-                 reason: str | None) -> None:
+                 reason: str | None, archive_root: Path, stat, state: str | None) -> None:
         self.path = path
         self.state_key = state_key
         self.size = size
         self.age_days = age_days
         self.reason = reason  # None means prunable
+        self.archive_root = archive_root
+        self.signature = _signature(stat)
+        self.state = state
 
     @property
     def prunable(self) -> bool:
         return self.reason is None
+
+
+def _signature(stat) -> tuple:
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _ingestion_reason(path: Path, stat, raw: str | None) -> str | None:
+    offset = _offset_of(raw)
+    if offset is None:
+        return "never ingested"
+    if offset != stat.st_size:
+        return f"only {offset:,} of {stat.st_size:,} bytes ingested"
+    try:
+        state = json.loads(raw)
+    except (TypeError, ValueError):
+        state = None
+    if not isinstance(state, dict) or not state.get("prefix_hash"):
+        return "ingestion fingerprint unavailable; collect again"
+    if state.get("mtime_ns") != stat.st_mtime_ns:
+        return "changed since ingestion"
+    if state.get("prefix_len") != offset:
+        return "incomplete ingestion fingerprint; collect again"
+    if prefix_hash(path, offset) != (state["prefix_hash"], offset):
+        return "changed since ingestion"
+    return None
 
 
 def survey(conn: sqlite3.Connection, archives: dict[str, Path],
@@ -88,19 +122,17 @@ def survey(conn: sqlite3.Connection, archives: dict[str, Path],
                 continue
             age_days = (now - stat.st_mtime) / 86400.0
             key = f"{prefix}:{path.relative_to(directory)}"
-            offset = _offset_of(db.get_state(conn, key))
+            state = db.get_state(conn, key)
 
             if now - stat.st_mtime < cutoff_s:
                 reason = "newer than the cutoff"
-            elif offset is None:
-                reason = "never ingested"
-            elif offset != stat.st_size:
-                # A partial trailing line, or a run that stopped early. Those
-                # bytes have not reached usage_event yet.
-                reason = f"only {offset:,} of {stat.st_size:,} bytes ingested"
             else:
-                reason = None
-            out.append(Candidate(path, key, stat.st_size, age_days, reason))
+                try:
+                    reason = _ingestion_reason(path, stat, state)
+                except OSError:
+                    reason = "changed during survey"
+            out.append(Candidate(path, key, stat.st_size, age_days, reason,
+                                 directory, stat, state))
 
     return out
 
@@ -116,32 +148,38 @@ def prune(conn: sqlite3.Connection, candidates: list[Candidate]) -> tuple[int, i
     """
     removed = reclaimed = 0
     directories = set()
+    eligible = [c for c in candidates if c.prunable]
+    roots = {c.archive_root for c in eligible}
 
-    for candidate in candidates:
-        if not candidate.prunable:
-            continue
-        try:
-            candidate.path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError:
-            continue  # permissions, or a mount that went away -- leave the state
-        conn.execute("DELETE FROM ingest_state WHERE key = ?", (candidate.state_key,))
-        directories.add(candidate.path.parent)
-        removed += 1
-        reclaimed += candidate.size
-
-    conn.commit()
-
-    # Codex nests sessions under YYYY/MM/DD, so pruning a day empties its
-    # directory. Tidy those up, deepest first, never touching a non-empty one.
-    for directory in sorted(directories, key=lambda d: -len(d.parts)):
-        while True:
+    with archive_locks(*roots):
+        for candidate in eligible:
             try:
-                directory.rmdir()
+                stat = candidate.path.stat()
+                state = db.get_state(conn, candidate.state_key)
+                # Reject even same-size replacements or a changed ingest state.
+                # The shared lock keeps collectors out until deletion commits.
+                if (_signature(stat) != candidate.signature or state != candidate.state
+                        or _ingestion_reason(candidate.path, stat, state) is not None):
+                    continue
+                candidate.path.unlink()
             except OSError:
-                break
-            directory = directory.parent
+                continue  # disappeared, permissions changed, or a mount went away
+            conn.execute("DELETE FROM ingest_state WHERE key = ?", (candidate.state_key,))
+            directories.add((candidate.path.parent, candidate.archive_root))
+            removed += 1
+            reclaimed += candidate.size
+
+        conn.commit()
+
+        # Stop at the archive root: its persistent lock file must survive, and
+        # pruning must never remove an ancestor outside the configured archive.
+        for directory, root in sorted(directories, key=lambda d: -len(d[0].parts)):
+            while directory != root:
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
+                directory = directory.parent
 
     return (removed, reclaimed)
 

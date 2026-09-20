@@ -329,10 +329,11 @@ When you want the space back, `--prune` reclaims it safely:
 ```
 
 Listing is the default, and there is no undo — these are full session
-transcripts, not just token counts. A file is only ever removed when all three
-hold: it is older than the cutoff, `ingest_state` has an offset for it, and that
-offset equals its current size, proving the last run read every byte with no
-partial trailing line outstanding. Anything else is listed with the reason it
+transcripts, not just token counts. A file is only ever removed when it is older than the cutoff, `ingest_state` has an offset equal to its
+current size, and the complete ingested fingerprint still matches. Collection
+and deletion share a process lock per archive; deletion rechecks the file and
+ingest state under that lock before removing it. Legacy offsets without a full
+fingerprint must be upgraded by running the collector before they can be pruned. Anything else is listed with the reason it
 was kept, so nothing is dropped on the assumption it was ingested.
 
 What you lose is the ability to re-parse those sessions later. What you keep is

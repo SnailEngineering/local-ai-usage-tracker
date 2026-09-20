@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aiusage import db  # noqa: E402
+from aiusage.locking import archive_locks  # noqa: E402
 from aiusage.sources import claude_code_local, codex_local  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
@@ -72,7 +73,7 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
     number of failures; one source raising never stops the other."""
     failures = 0
 
-    def stage(name: str, enabled: bool, fn, skip_reason: str = ""):
+    def stage(name: str, enabled: bool, fn, archive: Path, skip_reason: str = ""):
         nonlocal failures
         if not enabled:
             if not quiet:
@@ -84,8 +85,15 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
             return
         started = datetime.now(timezone.utc).isoformat()
         try:
-            stats = fn()
-            conn.commit()
+            # Hold the filesystem lock until the corresponding offsets and
+            # usage are committed, so prune can never see an in-flight copy.
+            with archive_locks(archive):
+                try:
+                    stats = fn()
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
             detail = " ".join(f"{k}={v}" for k, v in stats.items())
             if not quiet:
                 print(f"  {name:<22} ok       {detail}")
@@ -100,11 +108,11 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
         conn.commit()
 
     stage("claude_code_local", only in (None, "claude_code"),
-          lambda: claude_code_local.run(conn, claude_dir, archive_dir),
+          lambda: claude_code_local.run(conn, claude_dir, archive_dir), archive_dir,
           "--only excluded it")
 
     stage("codex_local", only in (None, "codex"),
-          lambda: codex_local.run(conn, codex_dir, codex_archive_dir),
+          lambda: codex_local.run(conn, codex_dir, codex_archive_dir), codex_archive_dir,
           "--only excluded it")
 
     return failures

@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from aiusage import db, prune
+from aiusage.sources.fingerprint import prefix_hash
 
 
 class PruneTests(unittest.TestCase):
@@ -28,7 +29,13 @@ class PruneTests(unittest.TestCase):
         return path
 
     def _state(self, key: str, offset: int) -> None:
-        db.set_state(self.conn, key, json.dumps({"offset": offset}), "now")
+        prefix, rel = key.split(":", 1)
+        path = (self.claude if prefix == "cc_offset" else self.codex) / rel
+        digest, length = prefix_hash(path, offset)
+        db.set_state(self.conn, key, json.dumps({
+            "offset": offset, "mtime_ns": path.stat().st_mtime_ns,
+            "prefix_hash": digest, "prefix_len": length,
+        }), "now")
         self.conn.commit()
 
     def test_only_old_and_fully_ingested_files_are_prunable(self) -> None:
@@ -101,12 +108,61 @@ class PruneTests(unittest.TestCase):
         self.assertFalse((self.codex / "2026" / "06" / "01").exists())
         self.assertTrue((self.codex / "2026" / "06" / "02").exists())
 
-    def test_a_legacy_bare_integer_offset_still_counts_as_ingested(self) -> None:
+    def test_a_legacy_bare_integer_offset_needs_a_collection_before_pruning(self) -> None:
         path = self._file(self.claude, "old.jsonl", "x" * 100, 90)
         db.set_state(self.conn, "cc_offset:old.jsonl", "100", "now")
         self.conn.commit()
         by_path = {c.path: c for c in prune.survey(self.conn, self.archives, 30)}
-        self.assertTrue(by_path[path].prunable)
+        self.assertFalse(by_path[path].prunable)
+        self.assertIn("collect again", by_path[path].reason)
+
+
+    def test_changed_files_and_state_are_revalidated_before_deletion(self) -> None:
+        for change in ("append", "replace", "rewrite", "state", "missing"):
+            with self.subTest(change):
+                path = self._file(self.claude, "changing.jsonl", "x" * 100, 90)
+                key = "cc_offset:changing.jsonl"
+                self._state(key, 100)
+                candidates = prune.survey(self.conn, self.archives, 30)
+                self.assertTrue(next(c for c in candidates if c.path == path).prunable)
+                stamp = path.stat().st_mtime_ns
+                if change == "append":
+                    with path.open("a") as fh:
+                        fh.write("unread")
+                elif change == "replace":
+                    replacement = path.with_suffix(".tmp")
+                    replacement.write_text("y" * 100)
+                    os.utime(replacement, ns=(stamp, stamp))
+                    replacement.replace(path)
+                elif change == "rewrite":
+                    path.write_text("y" * 100)
+                    os.utime(path, ns=(stamp, stamp))
+                elif change == "state":
+                    self._state(key, 50)
+                else:
+                    path.unlink()
+                self.assertEqual(prune.prune(self.conn, candidates), (0, 0))
+                self.assertIsNotNone(db.get_state(self.conn, key))
+                if change != "missing":
+                    self.assertTrue(path.exists())
+
+    def test_same_size_rewrite_before_survey_is_not_fully_ingested(self) -> None:
+        path = self._file(self.claude, "rewritten.jsonl", "x" * 100, 90)
+        self._state("cc_offset:rewritten.jsonl", 100)
+        stamp = path.stat().st_mtime_ns
+        path.write_text("y" * 100)
+        os.utime(path, ns=(stamp, stamp))
+        candidate = prune.survey(self.conn, self.archives, 30)[0]
+        self.assertFalse(candidate.prunable)
+        self.assertEqual(candidate.reason, "changed since ingestion")
+
+    def test_cleanup_keeps_archive_root_and_ancestors(self) -> None:
+        self._file(self.codex, "2026/06/01/a.jsonl", "x" * 10, 90)
+        self._state("codex_offset:2026/06/01/a.jsonl", 10)
+        self.assertEqual(prune.prune(self.conn, prune.survey(self.conn, self.archives, 30)), (1, 10))
+        self.assertTrue(self.codex.is_dir())
+        self.assertTrue((self.codex / ".aiusage.lock").is_file())
+        self.assertFalse((self.codex / "2026").exists())
 
 
 if __name__ == "__main__":
