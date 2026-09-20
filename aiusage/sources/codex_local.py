@@ -64,19 +64,25 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
     return (copied, total)
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None, str | None, int]:
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None, str | None, int, dict | None]:
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, 0, None, None, 0)
+        return (0, 0, None, None, 0, None)
     try:
         d = json.loads(raw)
         mtime = d.get("mtime_ns")
         head = d.get("prefix_hash")
+        context = d.get("context")
+        if not (isinstance(context, dict)
+                and isinstance(context.get("model"), str) and context["model"]
+                and "cwd" in context
+                and (context["cwd"] is None or isinstance(context["cwd"], str))):
+            context = None
         return (int(d.get("offset", 0)), int(d.get("seq", 0)),
                 int(mtime) if mtime is not None else None,
-                str(head) if head else None, int(d.get("prefix_len", 0)))
+                str(head) if head else None, int(d.get("prefix_len", 0)), context)
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
-        return (0, 0, None, None, 0)
+        return (0, 0, None, None, 0, None)
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
@@ -91,7 +97,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        offset, seq, saved_mtime, saved_prefix, saved_prefix_len = _read_state(conn, state_key)
+        offset, seq, saved_mtime, saved_prefix, saved_prefix_len, context = _read_state(conn, state_key)
         stat = path.stat()
         size = stat.st_size
 
@@ -117,19 +123,20 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
             conn.execute("DELETE FROM usage_event WHERE source = ? AND session_id = ?",
                          (SOURCE, session_id))
             offset, seq = 0, 0
+            context = None
             stats["rewritten"] += 1
 
         stats["files_read"] += 1
-        model = "unknown"
-        cwd = None
+        model = context["model"] if offset and context is not None else "unknown"
+        cwd = context["cwd"] if offset and context is not None else None
 
         # Bytes, not text -- see the matching comment in claude_code_local.ingest:
         # decoding first lets `offset` drift away from the real byte position on
         # CRLF or undecodable input, which desyncs the file for good.
         with path.open("rb") as fh:
-            # A resumed read starts mid-file, so re-scan the head cheaply to
-            # recover the model/cwd context that precedes this offset.
-            if offset:
+            # Old state without context needs one prefix scan. Subsequent
+            # appends seek directly to the offset after fingerprint validation.
+            if offset and context is None:
                 while fh.tell() < offset:
                     line = fh.readline()
                     if not line:
@@ -143,7 +150,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                             cwd = text_value(p.get("cwd")) or cwd
                     except (ValueError, TypeError, AttributeError):
                         continue
-                fh.seek(offset)
+            fh.seek(offset)
 
             for raw in fh:
                 if not raw.endswith(b"\n"):
@@ -192,6 +199,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         db.set_state(conn, state_key, json.dumps({
             "offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns,
             "prefix_hash": digest, "prefix_len": prefix_len,
+            "context": {"model": model, "cwd": cwd},
         }), now)
 
         if len(batch) >= 2000:

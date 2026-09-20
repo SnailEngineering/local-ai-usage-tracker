@@ -269,7 +269,9 @@ what makes the two totals match to the token.
 parses what was appended since last time. Changed files also have their entire
 previously ingested prefix hashed in bounded chunks to detect rewrites anywhere
 in the file. Upgrading from older offsets or 4 KB fingerprints replays each
-archive once. A partial trailing line (a session
+archive once. Codex also saves the current model and working directory with
+the offset, so resumed reads hash old bytes without reparsing their JSON.
+A partial trailing line (a session
 still being written) is left unread until it is complete. Full first run:
 ~8,300 messages in 0.3s.
 

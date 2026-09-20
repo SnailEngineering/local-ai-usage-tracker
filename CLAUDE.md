@@ -75,7 +75,10 @@ duplicates.
   incremental-read bookkeeping. Values are JSON: `offset` plus `mtime_ns`, a
   `prefix_hash`/`prefix_len` SHA-256 of all bytes through that offset
   (`sources/fingerprint.py`, how growing rewrites are distinguished from
-  appends), and for Codex also `seq`. Legacy offsets/head-only hashes are
+  appends), and for Codex also `seq` and `context` (model and working directory).
+  Codex resumes from saved context; older state without it scans prior JSON
+  records once to recover it. Rewrites discard that saved context.
+  Legacy offsets/head-only hashes are
   replayed once to establish the complete fingerprint.
   Offsets are **byte** positions, so both ingesters read the files in binary —
   decoding first would let CRLF or an undecodable byte desync them permanently.
