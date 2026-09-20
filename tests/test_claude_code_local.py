@@ -195,6 +195,27 @@ class ClaudeIngestTests(unittest.TestCase):
         (archive / "s.jsonl").write_bytes((archive / "s.jsonl").read_bytes())
         self.assertEqual(cc.ingest(conn, archive, "now")["rewritten"], 0)
 
+    def test_the_full_working_directory_is_stored_beside_its_basename(self) -> None:
+        conn, archive = self._ingest(json.dumps(_assistant(1, 5)).encode() + b"\n")
+        cc.ingest(conn, archive, "now")
+        row = conn.execute("SELECT project, project_path FROM usage_event").fetchone()
+        self.assertEqual((row["project"], row["project_path"]), ("project", "/work/project"))
+
+    def test_the_schema_migration_backfills_paths_from_the_archive(self) -> None:
+        """Rows ingested before project_path existed have NULL there. The
+        migration's forgotten offsets must make the next ingest rewrite them."""
+        conn, archive = self._ingest(json.dumps(_assistant(1, 5)).encode() + b"\n")
+        cc.ingest(conn, archive, "now")
+        conn.execute("UPDATE usage_event SET project_path = NULL")
+
+        cc.ingest(conn, archive, "now")   # nothing new: offsets say it is done
+        self.assertIsNone(conn.execute("SELECT project_path FROM usage_event").fetchone()[0])
+
+        db._backfill_project_path(conn)
+        cc.ingest(conn, archive, "now")
+        rows = conn.execute("SELECT project_path FROM usage_event").fetchall()
+        self.assertEqual([r[0] for r in rows], ["/work/project"])   # one row, not two
+
 
 if __name__ == "__main__":
     unittest.main()

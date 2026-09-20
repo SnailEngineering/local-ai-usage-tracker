@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import sqlite3
 import tempfile
 from collections import defaultdict
@@ -61,6 +62,45 @@ def _agg(conn: sqlite3.Connection) -> list[dict]:
         )
         rows.append(d)
     return rows
+
+
+def project_labels(projects) -> dict[str, str]:
+    """Display name for each project, keyed by `path or name`.
+
+    `projects` is an iterable of (path, name): the session's full working
+    directory (None for a row ingested before paths were stored) and its
+    basename. Two unrelated checkouts both called `backend` are different
+    projects, so identity is the path; the label stays the compact basename
+    unless that would put two rows under one name, and then only those rows
+    grow -- to the shortest trailing path that tells them apart
+    (`acme/backend`). Whether a row has a path is the column's say, never
+    guessed from the string: a bare name may contain a slash too."""
+    by_name: dict[str, list[str]] = defaultdict(list)    # name -> path keys
+    unpathed: dict[str, bool] = {}                       # name of rows with no path
+    for path, name in set(projects):
+        if path is None:
+            unpathed[name] = True
+        else:
+            by_name[name].append(path)
+
+    labels: dict[str, str] = {}
+    for name in unpathed:
+        # No path survived (its archive was pruned before the column existed),
+        # so it cannot be told apart from a same-named path. Say so only when
+        # there is something to be confused with.
+        labels[name] = f"{name} (path unknown)" if name in by_name else name
+    for name, paths in by_name.items():
+        if len(paths) == 1:
+            labels[paths[0]] = name
+            continue
+        parts = {k: [p for p in k.split("/") if p] for k in paths}
+        depth = 2
+        while (len({"/".join(v[-depth:]) for v in parts.values()}) < len(paths)
+               and depth < max(len(v) for v in parts.values())):
+            depth += 1
+        for k in paths:
+            labels[k] = "/".join(parts[k][-depth:])
+    return labels
 
 
 def build_payload(conn: sqlite3.Connection) -> dict:
@@ -159,23 +199,28 @@ def build_payload(conn: sqlite3.Connection) -> dict:
     month_proj: dict[str, dict[str, dict]] = defaultdict(dict)
 
     def _proj_entry(store: dict, d: dict) -> dict:
-        return store.setdefault(d["project"], {
-            "project": d["project"], "cost_usd": 0.0, "total_tokens": 0,
+        return store.setdefault(d["key"], {
+            "project": d["label"], "cost_usd": 0.0, "total_tokens": 0,
             "last_day": d["day"], "messages": 0, "unpriced": False,
         })
 
-    for r in conn.execute("""
-        SELECT day, COALESCE(project,'(unknown)') AS project,
-               provider, model,
+    proj_rows = [dict(r) for r in conn.execute("""
+        SELECT day, project_path, project, provider, model,
                SUM(input_tokens) input_tokens, SUM(output_tokens) output_tokens,
                SUM(cache_write_5m_tokens) cache_write_5m_tokens,
                SUM(cache_write_1h_tokens) cache_write_1h_tokens,
                SUM(cache_read_tokens) cache_read_tokens,
                COUNT(*) n
         FROM usage_event WHERE project IS NOT NULL
-        GROUP BY day, project, provider, model
-    """):
-        d = dict(r)
+        GROUP BY day, project_path, project, provider, model
+    """)]
+    # Labels are settled over every key first: whether `backend` needs a longer
+    # name depends on the other projects, not just the rows of this month.
+    labels = project_labels((r["project_path"], r["project"]) for r in proj_rows)
+
+    for d in proj_rows:
+        d["key"] = d["project_path"] or d["project"]
+        d["label"] = labels[d["key"]]
         d["month"] = d["day"][:7]
         d["model"] = pricing.normalize_model(d["model"])
         # None means "no rate on file" and must not collapse to zero -- flag the

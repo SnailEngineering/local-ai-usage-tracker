@@ -57,11 +57,13 @@ class CodexLocalIngestTests(unittest.TestCase):
 
             self.assertEqual(codex_local.ingest(conn, archive, "now")["events"], 1)
             rows = conn.execute(
-                "SELECT model, project, input_tokens FROM usage_event ORDER BY ts"
+                "SELECT model, project, input_tokens, project_path FROM usage_event ORDER BY ts"
             ).fetchall()
             self.assertEqual(
-                [(row["model"], row["project"], row["input_tokens"]) for row in rows],
-                [("gpt-5.6-terra", "project", 3), ("gpt-5.6-terra", "project", 5)],
+                [(row["model"], row["project"], row["project_path"], row["input_tokens"])
+                 for row in rows],
+                [("gpt-5.6-terra", "project", "/work/project", 3),
+                 ("gpt-5.6-terra", "project", "/work/project", 5)],
             )
 
     def test_same_size_rewrite_is_reingested(self) -> None:

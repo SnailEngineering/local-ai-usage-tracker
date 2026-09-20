@@ -61,6 +61,10 @@ duplicates.
 
 - `usage_event` — one row per assistant message. Token columns only, no dollar
   amounts at all; cost is always derived at render time from `aiusage/pricing.py`.
+  A project is identified by `project_path` (the session's full cwd); `project`
+  is just its basename, kept for display and for rows that predate the path.
+  `dashboard.project_labels()` shows the basename and widens only colliding
+  ones to the shortest distinguishing trailing path (`acme/backend`).
 - `coarse_daily_tokens` — recovered from Claude Code's `stats-cache.json`: one
   scalar per model per day, no input/output/cache split, so it's shown as a
   footnote and never enters cost math.
@@ -78,6 +82,10 @@ Schema changes go through `PRAGMA user_version`: bump `db.SCHEMA_VERSION` and ad
 the step to `db.MIGRATIONS` (a callable, so it can inspect the DB and stay
 idempotent — the same column arrives via `SCHEMA` on a new database and via
 `ALTER` on an old one). `CREATE TABLE IF NOT EXISTS` alone cannot migrate.
+A step may also make the next collection re-derive data: v3 adds `project_path`
+and deletes the `cc_offset:`/`codex_offset:` state rows, so the archive replays
+and rewrites each row in place (ids are deterministic) — the only place the
+path still exists.
 
 ### Pricing (`aiusage/pricing.py`)
 

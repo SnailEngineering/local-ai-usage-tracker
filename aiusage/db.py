@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS usage_event (
   cache_read_tokens     INTEGER NOT NULL DEFAULT 0,
   reasoning_tokens      INTEGER NOT NULL DEFAULT 0,
   requests              INTEGER NOT NULL DEFAULT 1,
-  project               TEXT,
+  project               TEXT,               -- basename of the cwd, for display
+  project_path          TEXT,               -- the full cwd; what identifies a project
   git_branch            TEXT,
   session_id            TEXT,
   service_tier          TEXT,
@@ -86,7 +87,7 @@ BUSY_TIMEOUT_S = 30.0
 # no-op against one that already exists, so without this a new column would
 # silently never reach any installation that has already run -- and the failure
 # would surface much later, as an OperationalError mid-collect.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
@@ -98,12 +99,28 @@ def _add_column(conn: sqlite3.Connection, table: str, column: str, decl: str) ->
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+def _backfill_project_path(conn: sqlite3.Connection) -> None:
+    """Add usage_event.project_path, then make the next collection fill it in.
+
+    The column is new, so every existing row has NULL there, and the only place
+    the path survives is the archived session files. Forgetting how far each
+    one was read makes the next run replay them from the top; ids are
+    deterministic, so the replay rewrites each row in place with its path and
+    nothing accumulates. Rows whose archive was pruned keep NULL and fall back
+    to the basename, which is all they ever had. Deleting a state row that is
+    not there is a no-op, so a fresh database passes through untouched."""
+    _add_column(conn, "usage_event", "project_path", "TEXT")
+    conn.execute("DELETE FROM ingest_state "
+                 "WHERE key LIKE 'cc_offset:%' OR key LIKE 'codex_offset:%'")
+
+
 # version -> the step taking the database from (version - 1) to it. Callables
 # rather than raw SQL so a step can inspect the database first and stay
 # idempotent; each runs at most once, in order, inside one transaction.
 MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: lambda conn: _add_column(
         conn, "run_log", "triggered_by", "TEXT NOT NULL DEFAULT 'scheduled'"),
+    3: _backfill_project_path,
 }
 
 
@@ -151,8 +168,8 @@ def set_state(conn: sqlite3.Connection, key: str, value: str, now: str) -> None:
 
 USAGE_COLUMNS = (
     "id source provider ts day model input_tokens output_tokens cache_write_5m_tokens "
-    "cache_write_1h_tokens cache_read_tokens reasoning_tokens requests project git_branch "
-    "session_id service_tier ingested_at"
+    "cache_write_1h_tokens cache_read_tokens reasoning_tokens requests project project_path "
+    "git_branch session_id service_tier ingested_at"
 ).split()
 
 

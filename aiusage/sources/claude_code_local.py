@@ -111,6 +111,7 @@ def _usage_row(rec: dict, now: str) -> dict | None:
         "reasoning_tokens": 0,
         "requests": 1,
         "project": os.path.basename(cwd) or None,
+        "project_path": cwd or None,
         "git_branch": rec.get("gitBranch") or None,
         "session_id": rec.get("sessionId") or rec.get("session_id"),
         "service_tier": usage.get("service_tier"),

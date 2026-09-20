@@ -75,6 +75,41 @@ class MigrationTests(unittest.TestCase):
                           f"SCHEMA_VERSION is {db.SCHEMA_VERSION} but no "
                           f"MIGRATIONS entry exists for version {version}")
 
+    def test_project_path_arrives_on_an_old_database_and_reingest_is_forced(self) -> None:
+        """v2 databases have no project_path, and the only place the path still
+        exists is the archived session files. The migration has to add the column
+        and forget the read offsets so the next run replays them and fills it --
+        without touching any other bookkeeping."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "usage.db"
+            raw = sqlite3.connect(path)
+            raw.executescript("""
+                CREATE TABLE usage_event (
+                  id TEXT PRIMARY KEY, source TEXT NOT NULL, provider TEXT NOT NULL,
+                  ts TEXT NOT NULL, day TEXT NOT NULL, model TEXT NOT NULL,
+                  project TEXT, ingested_at TEXT NOT NULL);
+                INSERT INTO usage_event
+                  VALUES ('a', 's', 'p', 't', '2026-08-01', 'm', 'backend', 't');
+                CREATE TABLE ingest_state (key TEXT PRIMARY KEY, value TEXT NOT NULL,
+                                           updated_at TEXT NOT NULL);
+                INSERT INTO ingest_state VALUES ('cc_offset:s.jsonl', '{}', 't');
+                INSERT INTO ingest_state VALUES ('codex_offset:c.jsonl', '{}', 't');
+                INSERT INTO ingest_state VALUES ('something_else', 'keep', 't');
+                PRAGMA user_version = 2;
+            """)
+            raw.commit()
+            raw.close()
+
+            conn = db.connect(path)
+            self.addCleanup(conn.close)
+
+            self.assertEqual(
+                conn.execute("SELECT project, project_path FROM usage_event").fetchone()[:],
+                ("backend", None))
+            self.assertEqual(
+                [r["key"] for r in conn.execute("SELECT key FROM ingest_state")],
+                ["something_else"])
+
 
 class RunLogTests(unittest.TestCase):
     def test_serve_runs_are_hidden_unless_they_failed(self) -> None:

@@ -22,6 +22,37 @@ def _event(**over) -> dict:
     return row
 
 
+class ProjectLabelTests(unittest.TestCase):
+    def test_a_unique_basename_stays_compact(self) -> None:
+        self.assertEqual(
+            dashboard.project_labels([("/Users/x/dev/web", "web"), ("/Users/x/dev/api", "api")]),
+            {"/Users/x/dev/web": "web", "/Users/x/dev/api": "api"})
+
+    def test_colliding_basenames_grow_only_as_far_as_they_must(self) -> None:
+        labels = dashboard.project_labels([
+            ("/w/acme/backend", "backend"), ("/w/globex/backend", "backend"),
+            ("/w/solo/web", "web")])
+        self.assertEqual(labels["/w/acme/backend"], "acme/backend")
+        self.assertEqual(labels["/w/globex/backend"], "globex/backend")
+        self.assertEqual(labels["/w/solo/web"], "web")
+
+    def test_deeper_collisions_keep_widening(self) -> None:
+        labels = dashboard.project_labels([
+            ("/a/x/backend", "backend"), ("/b/x/backend", "backend")])
+        self.assertEqual(labels["/a/x/backend"], "a/x/backend")
+        self.assertEqual(labels["/b/x/backend"], "b/x/backend")
+
+    def test_a_row_with_no_path_is_flagged_only_when_it_could_be_confused(self) -> None:
+        # Pruned-archive rows kept the bare name and nothing else.
+        self.assertEqual(dashboard.project_labels([(None, "old")]), {"old": "old"})
+        labels = dashboard.project_labels([(None, "backend"), ("/w/acme/backend", "backend")])
+        self.assertEqual(labels["/w/acme/backend"], "backend")
+        self.assertEqual(labels["backend"], "backend (path unknown)")
+
+    def test_a_bare_name_containing_a_slash_is_not_mistaken_for_a_path(self) -> None:
+        self.assertEqual(dashboard.project_labels([(None, "a/b")]), {"a/b": "a/b"})
+
+
 class DashboardTests(unittest.TestCase):
     def _conn(self, tmp: str, rows: list[dict]):
         conn = db.connect(Path(tmp) / "t.db")
@@ -45,6 +76,38 @@ class DashboardTests(unittest.TestCase):
             self.assertEqual(by_name["mystery"]["cost_usd"], 0.0)
             # The tokens still have to be counted even though the dollars aren't.
             self.assertEqual(by_name["mystery"]["total_tokens"], 150)
+
+    def test_same_named_projects_in_different_directories_stay_separate(self) -> None:
+        """Both collectors used to keep only the basename, so two unrelated
+        `backend` checkouts were summed into one row."""
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                _event(id="a", project="backend", project_path="/w/acme/backend",
+                       input_tokens=1_000_000),
+                _event(id="b", project="backend", project_path="/w/globex/backend",
+                       input_tokens=2_000_000, ts="2026-09-01T10:00:00Z", day="2026-09-01"),
+                _event(id="c", project="backend", project_path="/w/globex/backend",
+                       input_tokens=1_000_000, ts="2026-09-02T10:00:00Z", day="2026-09-02"),
+            ])
+            payload = dashboard.build_payload(conn)
+            by_name = {p["project"]: p for p in payload["projects"]}
+            self.assertEqual(set(by_name), {"acme/backend", "globex/backend"})
+            self.assertEqual(by_name["acme/backend"]["messages"], 1)
+            self.assertEqual(by_name["globex/backend"]["messages"], 2)
+            # ...and the month drill-down names them the same way.
+            self.assertEqual(
+                {p["project"] for p in payload["month_projects"]["2026-09"]},
+                {"globex/backend"})
+
+    def test_a_project_split_across_providers_is_still_one_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                _event(id="a", project="web", project_path="/w/web"),
+                _event(id="b", project="web", project_path="/w/web", provider="openai",
+                       source="codex_local", model="gpt-5"),
+            ])
+            projects = dashboard.build_payload(conn)["projects"]
+            self.assertEqual([(p["project"], p["messages"]) for p in projects], [("web", 2)])
 
     def test_project_name_cannot_break_out_of_the_script_block(self) -> None:
         """The payload is inlined into <script>, where the HTML parser wins."""
