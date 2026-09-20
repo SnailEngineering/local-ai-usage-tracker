@@ -32,7 +32,9 @@ by-model and top-projects tables.
 ### Getting around it
 
 - **Tiles** — lifetime totals, then this month / this week / today, so the
-  number you usually want is the one you land on.
+  number you usually want is the one you land on. Each card has Claude on the
+  bottom left and ChatGPT on the bottom right, including in month drill-downs.
+  Cache percentages use each provider's own tokens; active days can overlap.
 - **Charts** — daily cost stacked by provider, daily tokens stacked by model.
   Hover for a per-day breakdown. Models past the top 8 fold into "Other".
 - **Drill into a month** — click any row of the **By month** table. You get

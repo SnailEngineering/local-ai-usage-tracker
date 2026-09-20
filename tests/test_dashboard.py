@@ -5,6 +5,7 @@ import threading
 import unittest
 from unittest import mock
 from pathlib import Path
+from datetime import datetime, timezone
 
 from aiusage import dashboard, db
 
@@ -59,6 +60,66 @@ class DashboardTests(unittest.TestCase):
         db.upsert_usage(conn, rows)
         conn.commit()
         return conn
+
+    def test_provider_cards_reconcile_across_months_and_current_periods(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                _event(id="a", day="2026-09-14", input_tokens=1_000_000,
+                       output_tokens=0, cache_read_tokens=3_000_000),
+                _event(id="b", day="2026-09-14", input_tokens=1_000_000, output_tokens=0),
+                _event(id="c", day="2026-09-14", provider="openai", source="codex_local",
+                       model="gpt-5.6-terra", input_tokens=1_000_000,
+                       output_tokens=0, cache_read_tokens=1_000_000),
+                _event(id="d", day="2026-09-20", provider="openai", source="codex_local",
+                       model="unknown", input_tokens=0, output_tokens=0, cache_read_tokens=500),
+                _event(id="e", day="2026-09-01", input_tokens=1_000_000, output_tokens=0),
+                _event(id="f", day="2026-08-01", provider="openai", source="codex_local",
+                       model="gpt-5.6-terra", input_tokens=1_000_000, output_tokens=0),
+                _event(id="g", day="2026-08-02", input_tokens=1_000_000, output_tokens=0),
+            ])
+            self.addCleanup(conn.close)
+            with mock.patch.object(dashboard, "datetime", wraps=datetime) as clock:
+                clock.now.return_value = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+                payload = dashboard.build_payload(conn)
+            providers = payload["provider_totals"]
+            self.assertEqual(providers["anthropic"]["total_tokens"], 7_000_000)
+            self.assertEqual(providers["openai"]["total_tokens"], 3_000_500)
+            self.assertAlmostEqual(providers["anthropic"]["cost_usd"], 21.5)
+            self.assertAlmostEqual(providers["openai"]["cost_usd"], 4.7)
+            self.assertEqual(providers["anthropic"]["cache_read"], 3_000_000)
+            self.assertEqual(providers["openai"]["cache_read"], 1_000_500)
+            self.assertEqual(providers["anthropic"]["active_days"], 3)
+            self.assertEqual(providers["openai"]["active_days"], 3)
+            self.assertEqual(payload["totals"]["active_days"], 5)  # shared day counted once
+            self.assertTrue(providers["openai"]["unpriced"])
+            self.assertFalse(providers["anthropic"]["unpriced"])
+
+            for metric in ("cost_usd", "total_tokens", "cache_read"):
+                self.assertAlmostEqual(sum(p[metric] for p in providers.values()), payload["totals"][metric])
+                for month in payload["months"]:
+                    split = payload["month_providers"][month["month"]]
+                    self.assertAlmostEqual(sum(p[metric] for p in split.values()), month[metric])
+            self.assertEqual(payload["month_providers"]["2026-09"]["anthropic"]["active_days"], 2)
+            for period in ("month", "week", "today"):
+                split = payload["period_providers"][period]
+                self.assertAlmostEqual(sum(p["cost_usd"] for p in split.values()),
+                                       payload["totals"]["cost_" + period])
+            self.assertAlmostEqual(payload["period_providers"]["week"]["anthropic"]["cost_usd"], 11.5)
+            today = payload["period_providers"]["today"]
+            self.assertEqual(today["anthropic"]["active_days"], 0)
+            self.assertEqual(today["openai"]["priced_events"], 0)
+            self.assertTrue(today["openai"]["unpriced"])
+
+    def test_provider_cards_include_zero_usage_for_a_missing_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [_event()])
+            self.addCleanup(conn.close)
+            payload = dashboard.build_payload(conn)
+            for split in (payload["provider_totals"], payload["month_providers"]["2026-08"]):
+                self.assertEqual(split["openai"]["cost_usd"], 0)
+                self.assertEqual(split["openai"]["total_tokens"], 0)
+                self.assertEqual(split["openai"]["active_days"], 0)
+                self.assertFalse(split["openai"]["unpriced"])
 
     def test_unpriced_model_is_flagged_on_a_project_not_costed_at_zero(self) -> None:
         """A model with no rate must never look like a free project."""

@@ -103,6 +103,32 @@ def project_labels(projects) -> dict[str, str]:
     return labels
 
 
+def _provider_summary(rows) -> dict:
+    """Card metrics per provider; active days may overlap across providers."""
+    summaries = {}
+    for provider in ("anthropic", "openai"):
+        summaries[provider] = {
+            "cost_usd": 0.0, "total_tokens": 0, "cache_read": 0,
+            "days": set(), "unpriced": False, "priced_events": 0,
+        }
+    for row in rows:
+        provider = row["provider"]
+        if provider not in summaries:
+            continue
+        summary = summaries[provider]
+        summary["total_tokens"] += row["total_tokens"]
+        summary["cache_read"] += row["cache_read_tokens"]
+        summary["days"].add(row["day"])
+        if row["priced"]:
+            summary["cost_usd"] += row["cost_usd"]
+            summary["priced_events"] += row["n_events"]
+        else:
+            summary["unpriced"] = True
+    for summary in summaries.values():
+        summary["active_days"] = len(summary.pop("days"))
+    return summaries
+
+
 def build_payload(conn: sqlite3.Connection) -> dict:
     rows = _agg(conn)
 
@@ -276,6 +302,17 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "cost_month": sum(day_cost(d) for d in cost_by_day if d >= month_start),
     }
 
+    rows_by_month = defaultdict(list)
+    for row in rows:
+        rows_by_month[row["day"][:7]].append(row)
+    month_providers = {month: _provider_summary(group)
+                       for month, group in rows_by_month.items()}
+    period_providers = {
+        "month": _provider_summary(r for r in rows if r["day"] >= month_start),
+        "week": _provider_summary(r for r in rows if r["day"] >= week_start),
+        "today": _provider_summary(r for r in rows if r["day"] == today_str),
+    }
+
     # Scheduled runs plus any failure. A `--serve` session logs two rows a
     # minute, which would otherwise be the entire panel and hide exactly the
     # thing it is here to show: whether the launchd job is still working.
@@ -302,6 +339,9 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "projects": project_rows,
         "coarse": coarse,
         "totals": totals,
+        "provider_totals": _provider_summary(rows),
+        "month_providers": month_providers,
+        "period_providers": period_providers,
         "unpriced": {"tokens": unpriced_tokens, "models": sorted(unpriced_models)},
         "runs": runs,
     }
@@ -429,10 +469,19 @@ TEMPLATE = r"""<!doctype html>
   }
 
   .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-bottom:20px; }
-  .tile { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .tile { display:flex; flex-direction:column; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
   .tile .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
   .tile .v { font-size:27px; font-weight:640; margin-top:6px; letter-spacing:-0.02em; }
   .tile .n { color:var(--ink-2); font-size:12px; margin-top:4px; }
+  .provider-footer { margin-top:auto; padding-top:14px; }
+  .provider-split { display:flex; justify-content:space-between; gap:8px;
+    border-top:1px solid var(--border); padding-top:10px; }
+  .provider-part { min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .provider-part:last-child { text-align:right; }
+  .provider-name { color:var(--muted); font-size:11px; }
+  .provider-value { color:var(--ink-2); font-size:13px; font-weight:600;
+    font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+
 
   .legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:14px 0 0; }
   .legend span { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2); }
@@ -513,6 +562,7 @@ TEMPLATE = r"""<!doctype html>
     .tile .k { font-size:11px; letter-spacing:.04em; }
     .tile .v { font-size:21px; margin-top:4px; }
     .tile .n { font-size:11.5px; }
+    .provider-value { font-size:12px; }
     .tiles .tile:last-child:nth-child(odd) { grid-column:1 / -1; }
   }
 </style>
@@ -693,8 +743,35 @@ function render() {
   });
 }
 
+function providerSplit(summaries, metric) {
+  const hints = {
+    cost_usd: 'Cost at known rates; * means some usage is unpriced.',
+    total_tokens: 'Detailed tokens for each provider.',
+    cache_read: "Cache reads as a percentage of each provider's detailed tokens.",
+    active_days: 'Days with detailed usage for each provider; shared days count for both.',
+  };
+  const value = s => {
+    if (metric === 'cost_usd') {
+      if (s.unpriced && !s.priced_events) return 'Unpriced';
+      return usd2(s.cost_usd) + (s.unpriced ? ' *' : '');
+    }
+    if (metric === 'total_tokens') return tok(s.total_tokens);
+    if (metric === 'cache_read') return s.total_tokens
+      ? (s.cache_read / s.total_tokens * 100).toFixed(1) + '%' : '—';
+    return num(s.active_days);
+  };
+  return `<div class="provider-footer"><div class="provider-split" title="${esc(hints[metric])}">
+    ${[['anthropic', 'Claude'], ['openai', 'ChatGPT']].map(([key, label]) => {
+      const summary = (summaries || {})[key];
+      return `<div class="provider-part"><span class="provider-name">${label}</span>
+        <span class="provider-value">${summary ? value(summary) : '—'}</span></div>`;
+    }).join('')}
+  </div></div>`;
+}
+
 function renderAll(app) {
   const T = DATA.totals;
+  const P = DATA.provider_totals;
   const cacheShare = T.total_tokens ? (T.cache_read / T.total_tokens * 100) : 0;
   const span = DATA.days[0] + ' → ' + DATA.days[DATA.days.length - 1];
   // Days recovered from the stats cache sit outside every headline figure --
@@ -706,19 +783,19 @@ function renderAll(app) {
   let html = `
   <div class="tiles">
     <div class="tile"><div class="k">Total cost</div><div class="v">${usd2(T.cost_usd)}</div>
-      <div class="n">${span}</div></div>
+      <div class="n">${span}</div>${providerSplit(P, 'cost_usd')}</div>
     <div class="tile"><div class="k">Detailed tokens</div><div class="v">${tok(T.total_tokens)}</div>
-      <div class="n">${num(T.events)} messages${cDays ? ` · +${tok(cTok)} earlier, unsplit` : ''}</div></div>
+      <div class="n">${num(T.events)} messages${cDays ? ` · +${tok(cTok)} earlier, unsplit` : ''}</div>${providerSplit(P, 'total_tokens')}</div>
     <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
-      <div class="n">of detailed tokens</div></div>
+      <div class="n">of detailed tokens</div>${providerSplit(P, 'cache_read')}</div>
     <div class="tile"><div class="k">Days with detail</div><div class="v">${T.active_days}</div>
-      <div class="n">${usd2(T.cost_usd / Math.max(T.active_days, 1))} / day${cDays ? ` · +${cDays} earlier` : ''}</div></div>
+      <div class="n">${usd2(T.cost_usd / Math.max(T.active_days, 1))} / day${cDays ? ` · +${cDays} earlier` : ''}</div>${providerSplit(P, 'active_days')}</div>
   </div>
 
   <div class="tiles">
-    <div class="tile"><div class="k">This month</div><div class="v">${usd2(T.cost_month)}</div></div>
-    <div class="tile"><div class="k">This week</div><div class="v">${usd2(T.cost_week)}</div></div>
-    <div class="tile"><div class="k">Today</div><div class="v">${usd2(T.cost_today)}</div></div>
+    <div class="tile"><div class="k">This month</div><div class="v">${usd2(T.cost_month)}</div>${providerSplit(DATA.period_providers?.month, 'cost_usd')}</div>
+    <div class="tile"><div class="k">This week</div><div class="v">${usd2(T.cost_week)}</div>${providerSplit(DATA.period_providers?.week, 'cost_usd')}</div>
+    <div class="tile"><div class="k">Today</div><div class="v">${usd2(T.cost_today)}</div>${providerSplit(DATA.period_providers?.today, 'cost_usd')}</div>
   </div>
 
   <div class="card">
@@ -821,6 +898,7 @@ function renderAll(app) {
    rollups build_payload() already ships. */
 function renderMonth(app, month) {
   const M = DATA.months.find(x => x.month === month);
+  const P = (DATA.month_providers || {})[month];
   const i = DATA.months.indexOf(M);
   const prev = DATA.months[i - 1], next = DATA.months[i + 1];
   const models = DATA.month_models[month] || [];
@@ -871,13 +949,13 @@ function renderMonth(app, month) {
 
   <div class="tiles">
     <div class="tile"><div class="k">Cost</div><div class="v">${usd2(M.cost_usd)}${M.unpriced ? ' *' : ''}</div>
-      <div class="n">${delta}</div></div>
+      <div class="n">${delta}</div>${providerSplit(P, 'cost_usd')}</div>
     <div class="tile"><div class="k">Tokens</div><div class="v">${tok(M.total_tokens)}</div>
-      <div class="n">${num(M.events)} messages</div></div>
+      <div class="n">${num(M.events)} messages</div>${providerSplit(P, 'total_tokens')}</div>
     <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
-      <div class="n">of this month's tokens</div></div>
+      <div class="n">of this month's tokens</div>${providerSplit(P, 'cache_read')}</div>
     <div class="tile"><div class="k">Active days</div><div class="v">${M.active_days}</div>
-      <div class="n">${usd2(M.cost_usd / Math.max(M.active_days, 1))} / active day</div></div>
+      <div class="n">${usd2(M.cost_usd / Math.max(M.active_days, 1))} / active day</div>${providerSplit(P, 'active_days')}</div>
   </div>
 
   <div class="card">
