@@ -27,6 +27,7 @@ from pathlib import Path
 
 from .. import db
 from .fingerprint import HEAD_BYTES, head_hash
+from .validation import object_value, text_value, token_value
 
 SOURCE = "codex_local"
 PROVIDER = "openai"
@@ -132,14 +133,14 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     if not line:
                         break
                     try:
-                        d = json.loads(line.decode("utf-8", "replace"))
-                    except json.JSONDecodeError:
+                        d = object_value(json.loads(line.decode("utf-8", "replace")))
+                        p = object_value(d.get("payload"), optional=True)
+                        if d.get("type") == "turn_context":
+                            model = text_value(p.get("model")) or model
+                        if d.get("type") == "session_meta":
+                            cwd = text_value(p.get("cwd")) or cwd
+                    except (ValueError, TypeError, AttributeError):
                         continue
-                    p = d.get("payload") or {}
-                    if d.get("type") == "turn_context" and p.get("model"):
-                        model = p["model"]
-                    if d.get("type") == "session_meta" and p.get("cwd"):
-                        cwd = p["cwd"]
                 fh.seek(offset)
 
             for raw in fh:
@@ -155,31 +156,28 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     stats["bad_lines"] += 1
                     continue
 
-                p = rec.get("payload") or {}
-                rtype = rec.get("type")
-
-                if rtype == "session_meta":
-                    cwd = p.get("cwd") or cwd
-                    continue
-                if rtype == "turn_context":
-                    model = p.get("model") or model
-                    continue
-                if p.get("type") != "token_count":
-                    continue
-
-                usage = (p.get("info") or {}).get("last_token_usage") or {}
-                if not usage.get("total_tokens"):
-                    continue
-
-                ts = rec.get("timestamp")
-                if not ts:
-                    continue
-
-                # Incremented before the guarded block below so a record that
-                # fails validation still consumes its sequence number: ids stay
-                # stable if the same file is ever re-parsed from the start.
-                seq += 1
                 try:
+                    rec = object_value(rec)
+                    p = object_value(rec.get("payload"), optional=True)
+                    rtype = rec.get("type")
+
+                    if rtype == "session_meta":
+                        cwd = text_value(p.get("cwd")) or cwd
+                        continue
+                    if rtype == "turn_context":
+                        model = text_value(p.get("model")) or model
+                        continue
+                    if p.get("type") != "token_count":
+                        continue
+
+                    info = object_value(p.get("info"), optional=True)
+                    usage = object_value(info.get("last_token_usage"), optional=True)
+                    if not usage.get("total_tokens") or not rec.get("timestamp"):
+                        continue
+
+                    # Malformed usage still consumes its position, so replay
+                    # and incremental reads assign the same ids to later rows.
+                    seq += 1
                     row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now)
                 except (ValueError, TypeError, AttributeError):
                     # See claude_code_local.ingest: raising here would roll the
@@ -206,20 +204,20 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
                model: str, cwd: str | None, now: str) -> dict:
     """Build one usage row from a `token_count` payload. Raises on malformed
     input; `ingest` counts that and moves on."""
-    ts = rec["timestamp"]
-    total_in = usage.get("input_tokens", 0) or 0
-    cached_in = usage.get("cached_input_tokens", 0) or 0
-    out = usage.get("output_tokens", 0) or 0
+    ts = text_value(rec["timestamp"])
+    total_in = token_value(usage.get("input_tokens"))
+    cached_in = token_value(usage.get("cached_input_tokens"))
+    out = token_value(usage.get("output_tokens"))
     # Present since ~0.146 but always zero so far: OpenAI caching is
     # implicit, so there is no separate write to charge for. Read it
     # anyway so a future non-zero value is picked up automatically.
-    cache_write = usage.get("cache_write_input_tokens", 0) or 0
+    cache_write = token_value(usage.get("cache_write_input_tokens"))
 
     # A small number of records carry a total with the whole
     # breakdown zeroed (observed on compaction turns). Dropping them
     # silently loses tokens; attribute the remainder to input, which
     # is where essentially all of it lives on these tools.
-    declared = usage.get("total_tokens", 0) or 0
+    declared = token_value(usage.get("total_tokens"))
     if declared and (total_in + out) == 0:
         total_in = declared
 
@@ -237,13 +235,13 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
         "cache_write_5m_tokens": cache_write,
         "cache_write_1h_tokens": 0,
         "cache_read_tokens": cached_in,
-        "reasoning_tokens": usage.get("reasoning_output_tokens", 0) or 0,
+        "reasoning_tokens": token_value(usage.get("reasoning_output_tokens")),
         "requests": 1,
         "project": os.path.basename(cwd) if cwd else None,
         "project_path": cwd or None,
         "git_branch": None,
         "session_id": session_id,
-        "service_tier": (p.get("rate_limits") or {}).get("plan_type"),
+        "service_tier": text_value(object_value(p.get("rate_limits"), optional=True).get("plan_type")),
         "ingested_at": now,
     }
 

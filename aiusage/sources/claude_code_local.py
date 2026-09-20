@@ -20,6 +20,7 @@ from pathlib import Path
 
 from .. import db
 from .fingerprint import HEAD_BYTES, head_hash
+from .validation import object_value, text_value, token_value
 
 SOURCE = "claude_code_local"
 PROVIDER = "anthropic"
@@ -65,36 +66,36 @@ def archive(projects_dir: Path, archive_dir: Path) -> tuple[int, int]:
 
 
 def _usage_row(rec: dict, now: str) -> dict | None:
-    msg = rec.get("message") or {}
-    usage = msg.get("usage") or {}
-    model = msg.get("model")
+    msg = object_value(rec.get("message"), optional=True)
+    usage = object_value(msg.get("usage"), optional=True)
+    model = text_value(msg.get("model"))
 
     if model in SKIP_MODELS or not usage:
         return None
 
-    ts = rec.get("timestamp")
+    ts = text_value(rec.get("timestamp"))
     if not ts:
         return None
 
     # Dedupe: message id is unique per API response; request id disambiguates
     # retries that reuse it. Fall back to the record uuid.
-    key = f"{msg.get('id') or ''}:{rec.get('requestId') or ''}".strip(":")
+    key = f"{text_value(msg.get('id')) or ''}:{text_value(rec.get('requestId')) or ''}".strip(":")
     if not key:
-        key = rec.get("uuid") or ""
+        key = text_value(rec.get("uuid")) or ""
     if not key:
         return None
 
-    creation = usage.get("cache_creation") or {}
+    creation = object_value(usage.get("cache_creation"), optional=True)
     write_5m = creation.get("ephemeral_5m_input_tokens")
     write_1h = creation.get("ephemeral_1h_input_tokens")
 
     if write_5m is None and write_1h is None:
         # Older records only carry the flat total. Attribute it to the 5m tier,
         # which is the default TTL, and accept the small pricing error.
-        write_5m = usage.get("cache_creation_input_tokens", 0) or 0
+        write_5m = token_value(usage.get("cache_creation_input_tokens"))
         write_1h = 0
 
-    cwd = rec.get("cwd") or ""
+    cwd = text_value(rec.get("cwd")) or ""
 
     return {
         "id": f"cc:{key}",
@@ -103,18 +104,18 @@ def _usage_row(rec: dict, now: str) -> dict | None:
         "ts": ts,
         "day": _local_day(ts),
         "model": model,
-        "input_tokens": usage.get("input_tokens", 0) or 0,
-        "output_tokens": usage.get("output_tokens", 0) or 0,
-        "cache_write_5m_tokens": write_5m or 0,
-        "cache_write_1h_tokens": write_1h or 0,
-        "cache_read_tokens": usage.get("cache_read_input_tokens", 0) or 0,
+        "input_tokens": token_value(usage.get("input_tokens")),
+        "output_tokens": token_value(usage.get("output_tokens")),
+        "cache_write_5m_tokens": token_value(write_5m),
+        "cache_write_1h_tokens": token_value(write_1h),
+        "cache_read_tokens": token_value(usage.get("cache_read_input_tokens")),
         "reasoning_tokens": 0,
         "requests": 1,
         "project": os.path.basename(cwd) or None,
         "project_path": cwd or None,
-        "git_branch": rec.get("gitBranch") or None,
-        "session_id": rec.get("sessionId") or rec.get("session_id"),
-        "service_tier": usage.get("service_tier"),
+        "git_branch": text_value(rec.get("gitBranch")) or None,
+        "session_id": text_value(rec.get("sessionId")) or text_value(rec.get("session_id")),
+        "service_tier": text_value(usage.get("service_tier")),
         "ingested_at": now,
     }
 
@@ -200,9 +201,10 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                 except json.JSONDecodeError:
                     stats["bad_lines"] += 1
                     continue
-                if rec.get("type") != "assistant":
-                    continue
                 try:
+                    rec = object_value(rec)
+                    if rec.get("type") != "assistant":
+                        continue
                     row = _usage_row(rec, now)
                 except (ValueError, TypeError, AttributeError):
                     # A structurally valid record with a malformed timestamp or
