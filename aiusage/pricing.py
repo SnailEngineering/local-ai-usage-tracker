@@ -1,11 +1,15 @@
 """Token -> USD conversion, applied at render time.
 
-List prices, USD per million tokens (verified 2026-08-02), one table per
+List prices, USD per million tokens (verified 2026-10-10), one table per
 provider. Cache multipliers are relative to the model's base input rate:
 
     5-minute cache write : 1.25x input
     1-hour cache write   : 2.00x input
-    cache read           : 0.10x input
+    cache read           : 0.10x input (except CACHE_READ_MULT_OVERRIDES)
+
+Anthropic rates are from platform.claude.com/docs/en/about-claude/pricing;
+OpenAI rates are short-context (<=272K input) rates -- the long-context
+surcharge is not modeled.
 
 These are notional API list prices, not real invoices -- both sources
 (`claude_code_local`, `codex_local`) cover subscription usage that is never
@@ -20,27 +24,44 @@ CACHE_WRITE_5M_MULT = 1.25
 CACHE_WRITE_1H_MULT = 2.00
 CACHE_READ_MULT = 0.10
 
+# Models whose cache reads are discounted more deeply than CACHE_READ_MULT.
+CACHE_READ_MULT_OVERRIDES: dict[str, float] = {
+    "claude-fable-5-1":  0.025,
+    "claude-mythos-5-1": 0.025,
+    "claude-opus-5-5":   0.05,
+    "claude-sonnet-5-5": 0.05,
+    "gpt-6.1-sol":       0.05,
+}
+
 # model id -> (input $/MTok, output $/MTok)
 ANTHROPIC_RATES: dict[str, tuple[float, float]] = {
+    "claude-fable-5-1":   (10.00, 50.00),
+    "claude-mythos-5-1":  (10.00, 50.00),
     "claude-fable-5":     (10.00, 50.00),
     "claude-mythos-5":    (10.00, 50.00),
+    "claude-opus-5-5":    ( 4.00, 20.00),
     "claude-opus-5":      ( 5.00, 25.00),
     "claude-opus-4-8":    ( 5.00, 25.00),
     "claude-opus-4-7":    ( 5.00, 25.00),
     "claude-opus-4-6":    ( 5.00, 25.00),
     "claude-opus-4-5":    ( 5.00, 25.00),
     "claude-opus-4-1":    (15.00, 75.00),
-    "claude-sonnet-5":    ( 3.00, 15.00),
+    "claude-sonnet-5-5":  ( 2.00, 10.00),
+    "claude-sonnet-5":    ( 2.00, 10.00),
     "claude-sonnet-4-6":  ( 3.00, 15.00),
     "claude-sonnet-4-5":  ( 3.00, 15.00),
     "claude-sonnet-4-0":  ( 3.00, 15.00),
     "claude-haiku-4-5":   ( 1.00,  5.00),
 }
 
-# model id -> (input $/MTok, output $/MTok), per platform.openai.com/docs/pricing.
-# Cached input is a flat 0.10x input across every model below, same as
-# CACHE_READ_MULT, so it needs no separate table.
+# model id -> (input $/MTok, output $/MTok), per developers.openai.com/api/docs/pricing.
+# Cached input is 0.10x input, same as CACHE_READ_MULT, except where
+# CACHE_READ_MULT_OVERRIDES says otherwise.
 OPENAI_RATES: dict[str, tuple[float, float]] = {
+    "gpt-6-astra":    (10.00,  50.00),
+    "gpt-6.1-sol":    ( 2.00,  10.00),
+    "gpt-6-sol":      ( 2.00,  10.00),
+    "gpt-6-luna":     ( 0.10,   0.50),
     "gpt-5.6-sol":    ( 5.00,  30.00),
     "gpt-5.6-terra":  ( 2.00,  12.00),
     "gpt-5.6-luna":   ( 0.20,   1.20),
@@ -58,11 +79,12 @@ PROVIDER_RATES: dict[str, dict[str, tuple[float, float]]] = {
     "openai": OPENAI_RATES,
 }
 
-# Promotional pricing that applies only inside a date window. Sonnet 5 launched
-# at an introductory rate; without this, July is over-costed.
+# Promotional pricing that applies only inside a date window.
 DATED_OVERRIDES: list[tuple[str, str, str, tuple[float, float]]] = [
     # (model, start_day_inclusive, end_day_inclusive, (input, output))
-    ("claude-sonnet-5", "2026-01-01", "2026-08-31", (2.00, 10.00)),
+    # Announced 2026-08-21 as running "through at least November 21st"; extend
+    # the end date if OpenAI does.
+    ("gpt-5.6-sol", "2026-08-21", "2026-11-21", (4.00, 20.00)),
     # Preserve the rates used by tracker releases through the 2026-08-01
     # refresh. Current OpenAI API list rates are the defaults above.
     ("gpt-5.6-terra", "0001-01-01", "2026-08-01", (2.50, 15.00)),
@@ -125,6 +147,7 @@ def cost_usd(row) -> float | None:
         + row["output_tokens"] * out
         + row["cache_write_5m_tokens"] * inp * CACHE_WRITE_5M_MULT
         + row["cache_write_1h_tokens"] * inp * CACHE_WRITE_1H_MULT
-        + row["cache_read_tokens"] * inp * CACHE_READ_MULT
+        + row["cache_read_tokens"] * inp
+        * CACHE_READ_MULT_OVERRIDES.get(normalize_model(model), CACHE_READ_MULT)
     )
     return total / MTOK
