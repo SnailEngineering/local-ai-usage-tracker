@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
+from ..storage import protect_file
+from .archiving import mirror
 from .fingerprint import prefix_hash
 from .validation import object_value, text_value, token_value
 
@@ -36,33 +37,9 @@ def _local_day(ts_iso: str) -> str:
     return dt.astimezone().strftime("%Y-%m-%d")
 
 
-def archive(projects_dir: Path, archive_dir: Path) -> tuple[int, int]:
-    """Mirror new/changed JSONL files into the archive. Returns (copied, total)."""
-    copied = total = 0
-    if not projects_dir.is_dir():
-        return (0, 0)
-
-    for src in projects_dir.rglob("*.jsonl"):
-        total += 1
-        rel = src.relative_to(projects_dir)
-        dst = archive_dir / rel
-        try:
-            s = src.stat()
-        except OSError:
-            continue
-
-        if dst.exists():
-            d = dst.stat()
-            # `copy2` preserves mtime, so size and mtime together identify an
-            # unchanged append-only file while still catching a same-size rewrite.
-            if d.st_size == s.st_size and d.st_mtime_ns == s.st_mtime_ns:
-                continue
-
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied += 1
-
-    return (copied, total)
+def archive(projects_dir: Path, archive_dir: Path,
+            conn: sqlite3.Connection | None = None) -> tuple[int, int]:
+    return mirror(projects_dir, archive_dir, conn)
 
 
 def _usage_row(rec: dict, now: str) -> dict | None:
@@ -160,6 +137,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         rel = str(path.relative_to(archive_dir))
         state_key = f"cc_offset:{rel}"
         offset, saved_mtime, saved_prefix, saved_prefix_len = _read_state(conn, state_key)
+        protect_file(path)
         stat = path.stat()
         size = stat.st_size
 
@@ -273,7 +251,7 @@ def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str) 
 
 def run(conn: sqlite3.Connection, claude_dir: Path, archive_dir: Path) -> dict:
     now = datetime.now(timezone.utc).isoformat()
-    copied, total = archive(claude_dir / "projects", archive_dir)
+    copied, total = archive(claude_dir / "projects", archive_dir, conn)
     stats = ingest(conn, archive_dir, now)
     stats["archived"] = copied
     stats["source_files"] = total

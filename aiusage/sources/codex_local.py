@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
+from ..storage import protect_file
+from .archiving import mirror
 from .fingerprint import prefix_hash
 from .validation import object_value, text_value, token_value
 
@@ -43,30 +44,9 @@ def _local_day(ts_iso: str) -> str:
     return dt.astimezone().strftime("%Y-%m-%d")
 
 
-def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
-    """Mirror rollout files before Codex can prune them."""
-    copied = total = 0
-    if not sessions_dir.is_dir():
-        return (0, 0)
-
-    for src in sessions_dir.rglob("*.jsonl"):
-        total += 1
-        dst = archive_dir / src.relative_to(sessions_dir)
-        try:
-            s = src.stat()
-        except OSError:
-            continue
-        if dst.exists():
-            d = dst.stat()
-            # `copy2` preserves mtime; combine it with size so a same-size
-            # rewrite is not mistaken for an already archived file.
-            if d.st_size == s.st_size and d.st_mtime_ns == s.st_mtime_ns:
-                continue
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dst)
-        copied += 1
-
-    return (copied, total)
+def archive(sessions_dir: Path, archive_dir: Path,
+            conn: sqlite3.Connection | None = None) -> tuple[int, int]:
+    return mirror(sessions_dir, archive_dir, conn)
 
 
 def _read_state(conn: sqlite3.Connection, key: str) -> tuple:
@@ -106,6 +86,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         (offset, seq, saved_mtime, saved_prefix, saved_prefix_len, context,
          cumulative, version) = _read_state(conn, state_key)
         upgrade = version != ACCOUNTING_VERSION
+        protect_file(path)
         stat = path.stat()
         size = stat.st_size
 
@@ -284,7 +265,7 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
 
 def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:
     now = datetime.now(timezone.utc).isoformat()
-    copied, total = archive(codex_dir / "sessions", archive_dir)
+    copied, total = archive(codex_dir / "sessions", archive_dir, conn)
     stats = ingest(conn, archive_dir, now)
     stats["archived"] = copied
     stats["source_files"] = total

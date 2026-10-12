@@ -6,6 +6,8 @@ import fcntl
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from .storage import open_private
+
 
 @contextmanager
 def archive_locks(*directories: Path):
@@ -14,7 +16,6 @@ def archive_locks(*directories: Path):
     # lock a different inode while an existing holder still owns the old one.
     with ExitStack() as stack:
         for directory in sorted({p.resolve() for p in directories}):
-            directory.mkdir(parents=True, exist_ok=True)
-            fh = stack.enter_context((directory / ".aiusage.lock").open("a+b"))
+            fh = stack.enter_context(open_private(directory / ".aiusage.lock"))
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         yield

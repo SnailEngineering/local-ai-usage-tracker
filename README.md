@@ -317,6 +317,13 @@ If you fork or clone this repo, nothing you generate by running the collector
 gets committed — only the code does. Don't remove those `.gitignore` entries
 without knowing what you're exposing.
 
+Database files, SQLite sidecars, archive copies, and lock files use owner-only
+permissions (0600). Newly created data directories use 0700. Existing shared
+parent directories are left alone; existing application files are tightened when
+opened. Setup also makes the repository’s dedicated `data/` directory private.
+Archive updates are written to a temporary file and atomically replaced, so a
+failed copy preserves the previous complete archive.
+
 Worth knowing: the archive holds **full session transcripts**, not just token
 counts — everything you and the agent said. That is the price of being able to
 re-price and re-parse history later, but it means `data/archive*/` deserves the
@@ -342,6 +349,10 @@ and deletion share a process lock per archive; deletion rechecks the file and
 ingest state under that lock before removing it. Legacy offsets without a full
 fingerprint must be upgraded by running the collector before they can be pruned. Anything else is listed with the reason it
 was kept, so nothing is dropped on the assumption it was ingested.
+
+Unchanged originals are not copied back on the next run: a small pruning
+fingerprint stays in the database. If an original changes, it is archived and
+read again. This works even with a long source retention setting.
 
 What you lose is the ability to re-parse those sessions later. What you keep is
 every number: the events are already in `usage.db`, and cost is derived at

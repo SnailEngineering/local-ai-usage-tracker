@@ -7,6 +7,8 @@ import sqlite3
 from pathlib import Path
 from typing import Callable
 
+from .storage import open_private, protect_file
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 
@@ -144,7 +146,16 @@ def migrate(conn: sqlite3.Connection) -> int:
 
 
 def connect(path: Path, check_same_thread: bool = True) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Precreate the database privately so SQLite inherits 0600 for new WAL/SHM
+    # files. Tighten existing sidecars before opening an older installation.
+    with open_private(path):
+        pass
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(path) + suffix)
+        try:
+            protect_file(sidecar)
+        except FileNotFoundError:
+            pass
     conn = sqlite3.connect(path, timeout=BUSY_TIMEOUT_S,
                            check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row

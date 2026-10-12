@@ -192,8 +192,11 @@ last run consumed every byte — and its complete prefix hash and mtime must
 still match. Legacy offsets require collection before pruning. Deletion locks
 the affected archives and rechecks the survey's file identity, size, timestamps,
 ingest state, and fingerprint before unlinking. Directory cleanup stops at the
-archive root and leaves the persistent lock file in place. The state row is deleted with the file, and re-archiving simply re-ingests (every
-primary key is deterministic, so a replay is a no-op).
+archive root and leaves the persistent lock file in place. The read-offset row is replaced with a `pruned_archive:<absolute archive path>`
+fingerprint in `ingest_state`. `sources/archiving.py` leaves unchanged originals
+pruned and re-archives changed ones. Mirroring uses a private temporary file and
+atomic replacement. `storage.py` creates private files without changing the
+process umask or permissions on existing shared parent directories.
 
 ### Adding a new source
 

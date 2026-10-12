@@ -35,6 +35,7 @@ from pathlib import Path
 from . import db
 from .locking import archive_locks
 from .sources.fingerprint import prefix_hash
+from .sources.archiving import pruned_key
 
 # state-key prefix -> the archive directory those keys are relative to
 STATE_PREFIXES = {"claude_code_local": "cc_offset", "codex_local": "codex_offset"}
@@ -138,13 +139,11 @@ def survey(conn: sqlite3.Connection, archives: dict[str, Path],
 
 
 def prune(conn: sqlite3.Connection, candidates: list[Candidate]) -> tuple[int, int]:
-    """Delete the prunable candidates and forget their ingest_state. Returns
+    """Delete prunable files, replacing read offsets with pruning fingerprints. Returns
     (files removed, bytes reclaimed).
 
-    The state row goes with the file so a later re-archive of the same session
-    is read from scratch rather than resumed against an offset whose file no
-    longer exists. Re-reading is harmless -- every row's primary key is
-    deterministic, so a replay is a no-op.
+    The read offset goes with the file. A changed original can be re-archived
+    and replayed, while unchanged originals stay pruned. Usage rows are kept.
     """
     removed = reclaimed = 0
     directories = set()
@@ -164,6 +163,9 @@ def prune(conn: sqlite3.Connection, candidates: list[Candidate]) -> tuple[int, i
                 candidate.path.unlink()
             except OSError:
                 continue  # disappeared, permissions changed, or a mount went away
+            # Keep a compact fingerprint tombstone so the next collection does
+            # not restore an unchanged original that still exists upstream.
+            db.set_state(conn, pruned_key(candidate.path), state, str(time.time()))
             conn.execute("DELETE FROM ingest_state WHERE key = ?", (candidate.state_key,))
             directories.add((candidate.path.parent, candidate.archive_root))
             removed += 1

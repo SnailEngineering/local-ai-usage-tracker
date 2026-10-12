@@ -71,7 +71,8 @@ class PruneTests(unittest.TestCase):
         self.assertFalse(doomed.exists())
         self.assertTrue(kept.exists())
         keys = {r["key"] for r in self.conn.execute("SELECT key FROM ingest_state")}
-        self.assertEqual(keys, {"cc_offset:new.jsonl"})
+        from aiusage.sources.archiving import pruned_key
+        self.assertEqual(keys, {"cc_offset:new.jsonl", pruned_key(doomed)})
 
     def test_pruning_never_touches_recorded_usage(self) -> None:
         """The whole premise: the events are already in the database, so

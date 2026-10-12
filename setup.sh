@@ -16,6 +16,8 @@ echo
 # time and will not create intermediate directories -- without this the very
 # first scheduled run silently discards its own log.
 mkdir -p "$REPO_DIR/data"
+chmod 700 "$REPO_DIR/data"
+umask 077
 
 # --- .env -------------------------------------------------------------
 if [ -f "$REPO_DIR/.env" ]; then
