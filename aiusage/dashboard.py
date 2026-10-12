@@ -10,6 +10,8 @@ workflow stays a plain file on disk.
 from __future__ import annotations
 
 import json
+import base64
+import hashlib
 import os
 import posixpath
 import sqlite3
@@ -357,9 +359,14 @@ def render_payload(payload: dict,
     # otherwise close the block early and inject live markup. Escaping `<` keeps
     # the JSON valid and identical once parsed.
     data = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
-    return (TEMPLATE
-            .replace("__DATA__", data)
-            .replace("__REFRESH_MS__", str(refresh_seconds * 1000)))
+    html = (TEMPLATE
+            .replace("__REFRESH_MS__", str(refresh_seconds * 1000), 1)
+            .replace("__DATA__", data, 1))
+    # Only this generated script may execute. In particular, event handlers
+    # smuggled in through imported strings cannot run or load external assets.
+    script = html.split("<script>", 1)[1].split("</script>", 1)[0]
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    return html.replace("__SCRIPT_HASH__", digest, 1)
 
 
 def render(conn: sqlite3.Connection,
@@ -407,6 +414,7 @@ TEMPLATE = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-__SCRIPT_HASH__'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Usage</title>
 <style>
@@ -857,7 +865,7 @@ function renderAll(app) {
   if (DATA.coarse.length) {
     const lo = DATA.coarse[0].day, hi = DATA.coarse[DATA.coarse.length - 1].day;
     const t = DATA.coarse.reduce((s, c) => s + c.tokens, 0);
-    notes += `<div class="note">${DATA.coarse.length} earlier active days (${lo} → ${hi},
+    notes += `<div class="note">${DATA.coarse.length} earlier active days (${esc(lo)} → ${esc(hi)},
       ~${tok(t)} tokens) were recovered from Claude Code's stats cache. It records only a daily
       total per model with no input/output/cache split, so those days cannot be priced and are
       not shown in the charts above.</div>`;

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 
 def object_value(value, *, optional: bool = False) -> dict:
     if value is None and optional:
@@ -14,6 +16,15 @@ def object_value(value, *, optional: bool = False) -> dict:
 def text_value(value) -> str | None:
     if value is not None and not isinstance(value, str):
         raise ValueError("expected text or null")
+    return value
+
+
+def day_value(value) -> str:
+    """Require a real calendar date in the exact persisted YYYY-MM-DD format."""
+    if not isinstance(value, str) or len(value) != 10:
+        raise ValueError("expected YYYY-MM-DD")
+    if date.fromisoformat(value).isoformat() != value:
+        raise ValueError("expected YYYY-MM-DD")
     return value
 
 

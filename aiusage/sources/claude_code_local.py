@@ -21,7 +21,7 @@ from .. import db
 from ..storage import protect_file
 from .archiving import mirror
 from .fingerprint import prefix_hash
-from .validation import object_value, text_value, token_value
+from .validation import day_value, object_value, text_value, token_value
 
 SOURCE = "claude_code_local"
 PROVIDER = "anthropic"
@@ -212,7 +212,8 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     return stats
 
 
-def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str) -> int:
+def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str,
+                         stats: dict | None = None) -> int:
     """Recover coarse daily totals from Claude Code's own stats cache.
 
     This file keeps a per-day, per-model token count that outlives the JSONL
@@ -222,20 +223,37 @@ def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str) 
     """
     if not stats_cache.is_file():
         return 0
+
+    def bad_record():
+        if stats is not None:
+            stats["bad_coarse_records"] = stats.get("bad_coarse_records", 0) + 1
+
     try:
-        data = json.loads(stats_cache.read_text())
-    except (OSError, json.JSONDecodeError):
+        data = object_value(json.loads(stats_cache.read_text()))
+        entries = data.get("dailyModelTokens", [])
+        if not isinstance(entries, list):
+            raise ValueError("expected dailyModelTokens list")
+    except (OSError, ValueError):
+        bad_record()
         return 0
 
     rows = []
-    for entry in data.get("dailyModelTokens") or []:
-        day = entry.get("date")
-        if not day:
+    for entry in entries:
+        try:
+            entry = object_value(entry)
+            day = day_value(entry.get("date"))
+            tokens = object_value(entry.get("tokensByModel"))
+        except ValueError:
+            bad_record()
             continue
-        for model, total in (entry.get("tokensByModel") or {}).items():
+        for model, total in tokens.items():
             try:
-                total_tokens = int(total or 0)
-            except (TypeError, ValueError):
+                model = text_value(model)
+                if not model:
+                    raise ValueError("expected model name")
+                total_tokens = token_value(total)
+            except ValueError:
+                bad_record()
                 continue
             rows.append({
                 "id": f"ccstats:{day}:{model}",
@@ -255,5 +273,5 @@ def run(conn: sqlite3.Connection, claude_dir: Path, archive_dir: Path) -> dict:
     stats = ingest(conn, archive_dir, now)
     stats["archived"] = copied
     stats["source_files"] = total
-    stats["coarse_days"] = backfill_stats_cache(conn, claude_dir / "stats-cache.json", now)
+    stats["coarse_days"] = backfill_stats_cache(conn, claude_dir / "stats-cache.json", now, stats)
     return stats
