@@ -819,7 +819,7 @@ function renderAll(app) {
     <div class="scroll"><table>
       <thead><tr><th>Month</th><th>Input</th><th>Output</th><th>Cache write</th>
         <th>Cache read</th><th>Total</th><th>Cost</th></tr></thead>
-      <tbody>${DATA.months.map(m => `<tr class="link" data-month="${m.month}">
+      <tbody>${DATA.months.slice().reverse().map(m => `<tr class="link" data-month="${m.month}">
         <td><a class="drill" href="#month=${m.month}">${m.month}</a>
           <div class="models">${m.models.map(esc).join(', ')}</div></td>
         <td>${num(m.input_tokens)}</td><td>${num(m.output_tokens)}</td>
