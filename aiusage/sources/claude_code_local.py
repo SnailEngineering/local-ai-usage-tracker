@@ -220,9 +220,9 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                 if row:
                     batch.append(row)
 
-            if len(batch) >= 2000:
-                stats["events"] += db.upsert_usage(conn, batch)
-                batch = []
+                if len(batch) >= 2000:
+                    stats["events"] += db.upsert_usage(conn, batch)
+                    batch = []
 
         digest, prefix_len = prefix_hash(path, offset)
         db.set_state(conn, state_key, json.dumps({

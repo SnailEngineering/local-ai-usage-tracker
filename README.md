@@ -260,8 +260,11 @@ request id for Claude Code, session id + sequence for Codex — and writes are
 truncated file, changes nothing.
 
 **Codex token math.** `info.total_token_usage` is cumulative per session while
-`info.last_token_usage` is the per-turn delta; the deltas sum exactly to the
-cumulative figure, so the deltas are what get stored (they carry a date).
+`info.last_token_usage` is the per-turn delta; repeated cumulative states are skipped, and the remaining deltas are what
+get stored (they carry a date). The previous counters persist across incremental
+reads. A counter reset starts a new accounting epoch. Older accounting state
+triggers a one-time transactional replay of available archives, removing old
+duplicate rows; sessions whose archives were pruned retain their recorded totals.
 `token_count` events name no model, so the model is carried forward from the
 preceding `turn_context`. A few compaction turns report a total with the whole
 breakdown zeroed — those are attributed to input rather than dropped, which is

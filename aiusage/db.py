@@ -190,7 +190,7 @@ def upsert_usage(conn: sqlite3.Connection, rows: list[dict]) -> int:
         return 0
     placeholders = ", ".join("?" for _ in USAGE_COLUMNS)
     sql = f"INSERT OR REPLACE INTO usage_event ({', '.join(USAGE_COLUMNS)}) VALUES ({placeholders})"
-    conn.executemany(sql, [[r.get(c) for c in USAGE_COLUMNS] for r in rows])
+    conn.executemany(sql, ([r.get(c) for c in USAGE_COLUMNS] for r in rows))
     return len(rows)
 
 

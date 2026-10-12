@@ -9,8 +9,9 @@ Two details that matter:
 
   * `info.total_token_usage` is cumulative for the session and
     `info.last_token_usage` is the delta for that turn. Summing the deltas
-    reconciles exactly with the final cumulative figure, and gives per-day
-    attribution, so that's what we store.
+    gives per-day attribution. Repeated cumulative states are notifications,
+    not new usage; skip them even across incremental reads. A lower cumulative
+    total starts a new accounting epoch, so its last-usage delta is retained.
   * `token_count` events carry no model name. The model comes from the most
     recent preceding `turn_context` event in the same file, so we track it as
     we stream.
@@ -31,6 +32,10 @@ from .validation import object_value, text_value, token_value
 
 SOURCE = "codex_local"
 PROVIDER = "openai"
+
+# Missing versions replay available archives once, removing obsolete positional
+# rows in the same transaction. Pruned sessions are never deleted by an upgrade.
+ACCOUNTING_VERSION = 1
 
 
 def _local_day(ts_iso: str) -> str:
@@ -64,10 +69,10 @@ def archive(sessions_dir: Path, archive_dir: Path) -> tuple[int, int]:
     return (copied, total)
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | None, str | None, int, dict | None]:
+def _read_state(conn: sqlite3.Connection, key: str) -> tuple:
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, 0, None, None, 0, None)
+        return (0, 0, None, None, 0, None, None, None)
     try:
         d = json.loads(raw)
         mtime = d.get("mtime_ns")
@@ -80,9 +85,10 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int, int | Non
             context = None
         return (int(d.get("offset", 0)), int(d.get("seq", 0)),
                 int(mtime) if mtime is not None else None,
-                str(head) if head else None, int(d.get("prefix_len", 0)), context)
+                str(head) if head else None, int(d.get("prefix_len", 0)), context,
+                d.get("cumulative"), d.get("accounting_version"))
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
-        return (0, 0, None, None, 0, None)
+        return (0, 0, None, None, 0, None, None, None)
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
@@ -97,11 +103,13 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        offset, seq, saved_mtime, saved_prefix, saved_prefix_len, context = _read_state(conn, state_key)
+        (offset, seq, saved_mtime, saved_prefix, saved_prefix_len, context,
+         cumulative, version) = _read_state(conn, state_key)
+        upgrade = version != ACCOUNTING_VERSION
         stat = path.stat()
         size = stat.st_size
 
-        if (size == offset and saved_prefix is not None
+        if (not upgrade and size == offset and saved_prefix is not None
                 and saved_prefix_len == offset and saved_mtime == stat.st_mtime_ns):
             continue
 
@@ -113,7 +121,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         if not rewritten and saved_prefix is not None:
             rewritten = prefix_hash(path, saved_prefix_len) != (saved_prefix, saved_prefix_len)
 
-        if rewritten:
+        if rewritten or upgrade:
             # Codex ids are positional (`codex:<session>:<seq>`), so replaying a
             # rewritten file with INSERT OR REPLACE is not enough: any event that
             # disappeared keeps its old row forever, inventing usage that no
@@ -124,7 +132,8 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                          (SOURCE, session_id))
             offset, seq = 0, 0
             context = None
-            stats["rewritten"] += 1
+            cumulative = None
+            stats["rewritten"] += int(rewritten or saved_mtime is not None)
 
         stats["files_read"] += 1
         model = context["model"] if offset and context is not None else "unknown"
@@ -188,26 +197,43 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     # and incremental reads assign the same ids to later rows.
                     seq += 1
                     row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now)
+                    current = _cumulative(info)
+                    if current is not None and current == cumulative:
+                        continue
+                    # A reset is a different state too: accept its last delta,
+                    # rather than subtracting counters across accounting epochs.
+                    cumulative = current
                 except (ValueError, TypeError, AttributeError):
                     # See claude_code_local.ingest: raising here would roll the
                     # whole source back and stall it on this byte permanently.
                     stats["bad_records"] += 1
                     continue
                 batch.append(row)
+                if len(batch) >= 2000:
+                    stats["events"] += db.upsert_usage(conn, batch)
+                    batch = []
 
         digest, prefix_len = prefix_hash(path, offset)
         db.set_state(conn, state_key, json.dumps({
             "offset": offset, "seq": seq, "mtime_ns": stat.st_mtime_ns,
             "prefix_hash": digest, "prefix_len": prefix_len,
             "context": {"model": model, "cwd": cwd},
+            "cumulative": cumulative, "accounting_version": ACCOUNTING_VERSION,
         }), now)
-
-        if len(batch) >= 2000:
-            stats["events"] += db.upsert_usage(conn, batch)
-            batch = []
 
     stats["events"] += db.upsert_usage(conn, batch)
     return stats
+
+
+def _cumulative(info: dict) -> dict | None:
+    """Normalize counters for duplicate detection; legacy events have none."""
+    value = object_value(info.get("total_token_usage"), optional=True)
+    if "total_tokens" not in value:
+        return None
+    return {key: token_value(value.get(key)) for key in (
+        "total_tokens", "input_tokens", "output_tokens", "cached_input_tokens",
+        "cache_write_input_tokens", "reasoning_output_tokens",
+    )}
 
 
 def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
