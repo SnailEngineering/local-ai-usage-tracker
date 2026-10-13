@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-__SCRIPT_HASH__'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Usage</title>
+<style>
+__CSS__
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>AI Usage</h1>
+    <button class="btn" id="refresh-btn" type="button">Refresh</button>
+    <button class="btn" id="pause-btn" type="button" aria-pressed="false">Pause auto-refresh</button>
+    <span class="stamp" id="stamp"></span>
+  </header>
+  <div id="refresh-error" class="note refresh-error" role="status" hidden></div>
+  <p id="refresh-status" class="sr-only" role="status" aria-live="polite"></p>
+  <main id="app"></main>
+</div>
+
+<script>
+__JS__
+</script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 # Personal data -- collected usage history, archived session transcripts,
 # and the rendered dashboard (it embeds per-project cost/token data inline).
 data/
-dashboard.html
+/dashboard.html
 
 # Secrets
 .env
