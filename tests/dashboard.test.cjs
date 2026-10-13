@@ -219,6 +219,17 @@ test('daily tables are lazy, exact, labelled, and escaped; legacy coarse dates a
   assert.match(escaped, /&lt;date&gt;/);
 });
 
+test('month and project dates are escaped at every sink', () => {
+  const data = structuredClone(payload);
+  const bad = '"><img src=x>';
+  data.months[0].month = bad;
+  data.projects = [{project: 'p', messages: 1, total_tokens: 1, last_day: bad, cost_usd: 0, unpriced: false}];
+  const b = browserDouble({data});
+  const html = b.el('app').innerHTML;
+  assert.ok(!html.includes('<img'));
+  assert.ok(html.includes('&quot;&gt;&lt;img'));
+});
+
 test('small text colors meet 4.5:1 in both themes', () => {
   const css = fs.readFileSync(path.join(root, 'aiusage/templates/dashboard.css'), 'utf8');
   function lum(hex) {

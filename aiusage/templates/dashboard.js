@@ -75,7 +75,7 @@ function stackedBars(el, opts) {
     // rather than print two dates on top of each other.
     const last = days.length - 1;
     if ((i % every === 0 && (last - i >= every * 0.6 || i === last)) || i === last) {
-      ticks += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${tickFmt(d)}</text>`;
+      ticks += `<text class="tick" x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(tickFmt(d))}</text>`;
     }
   });
 
@@ -324,7 +324,7 @@ function renderAll(app) {
   <h2 id="view-heading" tabindex="-1" class="sr-only">All time usage</h2>
   <div class="tiles">
     <div class="tile"><div class="k">Total cost</div><div class="v">${usd2(T.cost_usd)}</div>
-      <div class="n">${span}</div>${providerSplit(P, 'cost_usd')}</div>
+      <div class="n">${esc(span)}</div>${providerSplit(P, 'cost_usd')}</div>
     <div class="tile"><div class="k">Detailed tokens</div><div class="v">${tok(T.total_tokens)}</div>
       <div class="n">${num(T.events)} messages${cDays ? ` · +${tok(cTok)} earlier, unsplit` : ''}</div>${providerSplit(P, 'total_tokens')}</div>
     <div class="tile"><div class="k">Cache reads</div><div class="v">${cacheShare.toFixed(1)}%</div>
@@ -360,8 +360,8 @@ function renderAll(app) {
     <div class="scroll"><table>
       <thead><tr><th>Month</th><th>Input</th><th>Output</th><th>Cache write</th>
         <th>Cache read</th><th>Total</th><th>Cost</th></tr></thead>
-      <tbody>${DATA.months.slice().reverse().map(m => `<tr class="link" data-month="${m.month}">
-        <td><a class="drill" href="#month=${m.month}">${m.month}</a>
+      <tbody>${DATA.months.slice().reverse().map(m => `<tr class="link" data-month="${esc(m.month)}">
+        <td><a class="drill" href="#month=${esc(m.month)}">${esc(m.month)}</a>
           <div class="models">${m.models.map(esc).join(', ')}</div></td>
         <td>${num(m.input_tokens)}</td><td>${num(m.output_tokens)}</td>
         <td>${num(m.cache_write)}</td><td>${num(m.cache_read)}</td>
@@ -384,7 +384,7 @@ function renderAll(app) {
         <thead><tr><th>Project</th><th>Messages</th><th>Tokens</th><th>Last used</th><th>Cost</th></tr></thead>
         <tbody>${DATA.projects.map(p => `<tr><td>${esc(p.project)}</td>
           <td>${num(p.messages)}</td><td>${tok(p.total_tokens)}</td>
-          <td>${p.last_day}</td>
+          <td>${esc(p.last_day)}</td>
           <td class="num-strong">${usd2(p.cost_usd)}${p.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
       </table></div></div>`;
   }
@@ -472,19 +472,19 @@ function renderMonth(app, month) {
   if (prev && prev.cost_usd > 0) {
     const pct = (M.cost_usd - prev.cost_usd) / prev.cost_usd * 100;
     delta = `<span class="delta ${pct >= 0 ? 'up' : 'down'}">${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct).toFixed(0)}%</span>`
-          + ` vs ${prev.month}`;
+          + ` vs ${esc(prev.month)}`;
   } else if (prev) {
-    delta = 'vs ' + prev.month;
+    delta = 'vs ' + esc(prev.month);
   }
 
   const navLink = (m, text) => m
-    ? `<a class="btn" href="#month=${m.month}">${text}</a>`
-    : `<span class="btn" aria-disabled="true">${text}</span>`;
+    ? `<a class="btn" href="#month=${esc(m.month)}">${esc(text)}</a>`
+    : `<span class="btn" aria-disabled="true">${esc(text)}</span>`;
 
   let html = `
   <div class="crumbs">
     <a class="btn" href="#">&larr; All time</a>
-    <h2 id="view-heading" tabindex="-1">${title}</h2>
+    <h2 id="view-heading" tabindex="-1">${esc(title)}</h2>
     <div class="nav">
       ${navLink(prev, '‹ ' + (prev ? prev.month : 'Earlier'))}
       ${navLink(next, (next ? next.month : 'Later') + ' ›')}
@@ -504,7 +504,7 @@ function renderMonth(app, month) {
 
   <div class="card">
     <h2>Daily cost by provider</h2>
-    <p class="sub">${title}, at list prices. Days with no recorded usage are left blank.</p>
+    <p class="sub">${esc(title)}, at list prices. Days with no recorded usage are left blank.</p>
     <div class="chart" id="c-cost"></div>
     ${legend(providers, DATA.provider_slot)}
   </div>
@@ -518,7 +518,7 @@ function renderMonth(app, month) {
 
   <div class="card">
     <h2>By model</h2>
-    <p class="sub">Every model used in ${title}, largest first. Models folded into the
+    <p class="sub">Every model used in ${esc(title)}, largest first. Models folded into the
       chart's &ldquo;Other&rdquo; series above are itemised here.</p>
     <div class="scroll"><table>
       <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache write</th>
@@ -541,12 +541,12 @@ function renderMonth(app, month) {
   if (projects.length) {
     html += `<div class="card">
       <h2>Top projects</h2>
-      <p class="sub">Ranked within ${title} only &mdash; the all-time table ranks across every month.</p>
+      <p class="sub">Ranked within ${esc(title)} only &mdash; the all-time table ranks across every month.</p>
       <div class="scroll"><table>
         <thead><tr><th>Project</th><th>Messages</th><th>Tokens</th><th>Last used</th><th>Cost</th></tr></thead>
         <tbody>${projects.map(p => `<tr><td>${esc(p.project)}</td>
           <td>${num(p.messages)}</td><td>${tok(p.total_tokens)}</td>
-          <td>${p.last_day}</td>
+          <td>${esc(p.last_day)}</td>
           <td class="num-strong">${usd2(p.cost_usd)}${p.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
       </table></div></div>`;
   }
