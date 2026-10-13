@@ -24,6 +24,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 from .. import db
 from ..storage import protect_file
@@ -49,10 +50,22 @@ def archive(sessions_dir: Path, archive_dir: Path,
     return mirror(sessions_dir, archive_dir, conn)
 
 
-def _read_state(conn: sqlite3.Connection, key: str) -> tuple:
+class _State(NamedTuple):
+    """One file's `ingest_state` row. The defaults mean "never read"."""
+    offset: int = 0
+    seq: int = 0
+    mtime_ns: int | None = None
+    prefix_hash: str | None = None
+    prefix_len: int = 0
+    context: dict | None = None          # {"model", "cwd"} at `offset`
+    cumulative: dict | None = None       # last total_token_usage, for dedup
+    accounting_version: int | None = None
+
+
+def _read_state(conn: sqlite3.Connection, key: str) -> _State:
     raw = db.get_state(conn, key)
     if not raw:
-        return (0, 0, None, None, 0, None, None, None)
+        return _State()
     try:
         d = json.loads(raw)
         mtime = d.get("mtime_ns")
@@ -63,12 +76,12 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple:
                 and "cwd" in context
                 and (context["cwd"] is None or isinstance(context["cwd"], str))):
             context = None
-        return (int(d.get("offset", 0)), int(d.get("seq", 0)),
-                int(mtime) if mtime is not None else None,
-                str(head) if head else None, int(d.get("prefix_len", 0)), context,
-                d.get("cumulative"), d.get("accounting_version"))
+        return _State(int(d.get("offset", 0)), int(d.get("seq", 0)),
+                      int(mtime) if mtime is not None else None,
+                      str(head) if head else None, int(d.get("prefix_len", 0)), context,
+                      d.get("cumulative"), d.get("accounting_version"))
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
-        return (0, 0, None, None, 0, None, None, None)
+        return _State()
 
 
 def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
@@ -83,24 +96,25 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
         state_key = f"codex_offset:{rel}"
-        (offset, seq, saved_mtime, saved_prefix, saved_prefix_len, context,
-         cumulative, version) = _read_state(conn, state_key)
-        upgrade = version != ACCOUNTING_VERSION
+        saved = _read_state(conn, state_key)
+        # Mutable cursors; `saved` keeps what the last run recorded.
+        offset, seq, context, cumulative = saved.offset, saved.seq, saved.context, saved.cumulative
+        upgrade = saved.accounting_version != ACCOUNTING_VERSION
         protect_file(path)
         stat = path.stat()
         size = stat.st_size
 
-        if (not upgrade and size == offset and saved_prefix is not None
-                and saved_prefix_len == offset and saved_mtime == stat.st_mtime_ns):
+        if (not upgrade and size == offset and saved.prefix_hash is not None
+                and saved.prefix_len == offset and saved.mtime_ns == stat.st_mtime_ns):
             continue
 
         session_id = path.stem
         # Verify every previously ingested byte. Legacy head-only fingerprints
         # cannot prove the prefix is unchanged, so replay those files once.
-        rewritten = (size < offset or (size == offset and saved_mtime is not None)
-                     or (offset > 0 and (saved_prefix is None or saved_prefix_len != offset)))
-        if not rewritten and saved_prefix is not None:
-            rewritten = prefix_hash(path, saved_prefix_len) != (saved_prefix, saved_prefix_len)
+        rewritten = (size < offset or (size == offset and saved.mtime_ns is not None)
+                     or (offset > 0 and (saved.prefix_hash is None or saved.prefix_len != offset)))
+        if not rewritten and saved.prefix_hash is not None:
+            rewritten = prefix_hash(path, saved.prefix_len) != (saved.prefix_hash, saved.prefix_len)
 
         if rewritten or upgrade:
             # Codex ids are positional (`codex:<session>:<seq>`), so replaying a
@@ -114,7 +128,10 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
             offset, seq = 0, 0
             context = None
             cumulative = None
-            stats["rewritten"] += int(rewritten or saved_mtime is not None)
+            # An accounting upgrade of a file read before counts as a rewrite;
+            # a file never read before (no saved mtime) does not.
+            if rewritten or saved.mtime_ns is not None:
+                stats["rewritten"] += 1
 
         stats["files_read"] += 1
         model = context["model"] if offset and context is not None else "unknown"
