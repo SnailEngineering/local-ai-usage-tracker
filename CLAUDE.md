@@ -71,21 +71,23 @@ duplicates.
 - `coarse_daily_tokens` — recovered from Claude Code's `stats-cache.json`: one
   scalar per model per day, no input/output/cache split, so it's shown as a
   footnote and never enters cost math.
-- `ingest_state` — offsets/cursors keyed by `source:relative_path`, the
-  incremental-read bookkeeping. Values are JSON: `offset` plus `mtime_ns`, a
-  `prefix_hash`/`prefix_len` SHA-256 of all bytes through that offset
-  (`sources/fingerprint.py`, how growing rewrites are distinguished from
-  appends), and for Codex also `seq` and `context` (model and working directory).
-  Codex resumes from saved context; older state without it scans prior JSON
-  records once to recover it. Rewrites discard that saved context. Codex also
-  saves cumulative counters and an accounting version. Repeated states are not
-  new usage; lower counters, including zero-usage reset events, start a new epoch.
-  Older accounting versions rebuild available sessions transactionally and leave
-  pruned history untouched.
-  Legacy offsets/head-only hashes are
-  replayed once to establish the complete fingerprint.
-  Offsets are **byte** positions, so both ingesters read the files in binary —
-  decoding first would let CRLF or an undecodable byte desync them permanently.
+- `ingest_state` — incremental-read bookkeeping, one JSON value per key.
+  - `cc_offset:<rel>` / `codex_offset:<rel>` (relative to the archive), both
+    with `offset`, `mtime_ns`, and `prefix_hash`/`prefix_len`: a SHA-256 of
+    every byte through `offset` (`sources/fingerprint.py`), which is how a
+    growing rewrite is told apart from an append. Legacy offsets and head-only
+    hashes are replayed once to establish the full fingerprint.
+  - Offsets are **byte** positions, so both ingesters read the files in binary —
+    decoding first would let CRLF or an undecodable byte desync them permanently.
+  - Codex also saves (`codex_local._State`) `seq`, `context` (model and working
+    directory, so a resume needn't rescan; older state without it scans once,
+    and a rewrite discards it), `cumulative` (the last `total_token_usage`) and
+    `accounting_version`. A repeated cumulative state is not new usage; a lower
+    one, including a zero-usage reset event, starts a new epoch. An older
+    accounting version rebuilds that session in one transaction; pruned
+    sessions are left untouched.
+  - `pruned_archive:<absolute path>` — the fingerprint of a pruned file, so an
+    unchanged original is not archived again (see Retention).
 - `run_log` — append-only, so a silently failing cron job is visible via
   `--status`. `triggered_by` separates `scheduled` runs from `serve` ones;
   both `--status` and the dashboard show scheduled runs plus anything that
