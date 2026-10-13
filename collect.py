@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aiusage import db  # noqa: E402
 from aiusage.locking import archive_locks  # noqa: E402
+from aiusage.storage import protect_tree  # noqa: E402
 from aiusage.sources import claude_code_local, codex_local  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
@@ -89,6 +90,9 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
             # usage are committed, so prune can never see an in-flight copy.
             with archive_locks(archive):
                 try:
+                    # The archive belongs to this tool, so its folders (named
+                    # after project paths) are made private, older ones too.
+                    protect_tree(archive)
                     stats = fn()
                     conn.commit()
                 except BaseException:
@@ -163,6 +167,11 @@ def main() -> int:
     # --serve hands the connection to a ThreadingHTTPServer, where each
     # request runs on its own thread; server.py serializes every access with
     # a lock, so disabling sqlite's same-thread check here is safe.
+    # The repository's own data/ predates private storage on older installs.
+    # A configured location elsewhere may be a shared folder, so it is left be.
+    data_dir = ROOT / "data"
+    if data_dir.is_dir() and not data_dir.is_symlink() and data_dir.stat().st_mode & 0o077:
+        data_dir.chmod(0o700)
     conn = db.connect(db_path, check_same_thread=not args.serve)
 
     if args.status:

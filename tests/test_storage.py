@@ -113,3 +113,28 @@ class StorageTests(unittest.TestCase):
                     self.assertIsNone(db.get_state(conn, archiving.pruned_key(archive / 's.jsonl')))
                 finally:
                     conn.close()
+
+
+class ProtectTreeTests(unittest.TestCase):
+    def test_collection_makes_existing_archive_folders_private(self):
+        import collect
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / 'outside'
+            outside.mkdir(mode=0o755)
+            archives = [root / 'archive' / 'project-a', root / 'archive-codex' / '2026']
+            for nested in archives:
+                nested.mkdir(parents=True)
+                nested.parent.chmod(0o755)
+                nested.chmod(0o755)
+            (root / 'archive' / 'linked').symlink_to(outside)
+            conn = db.connect(root / 'usage.db')
+            self.addCleanup(conn.close)
+            failures = collect.run_sources(conn, root / 'no-claude', root / 'no-codex',
+                                           root / 'archive', root / 'archive-codex', quiet=True)
+            self.assertEqual(failures, 0)
+            for nested in archives:
+                self.assertEqual(nested.stat().st_mode & 0o777, 0o700)
+                self.assertEqual(nested.parent.stat().st_mode & 0o777, 0o700)
+            # A symlink out of the archive is not followed.
+            self.assertEqual(outside.stat().st_mode & 0o777, 0o755)

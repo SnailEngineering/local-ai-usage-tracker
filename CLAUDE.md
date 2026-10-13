@@ -209,7 +209,9 @@ archive root and leaves the persistent lock file in place. The read-offset row i
 fingerprint in `ingest_state`. `sources/archiving.py` leaves unchanged originals
 pruned and re-archives changed ones. Mirroring uses a private temporary file and
 atomic replacement. `storage.py` creates private files without changing the
-process umask or permissions on existing shared parent directories.
+process umask or permissions on existing shared parent directories. The
+archive trees and the repo's own `data/` are the exceptions: they belong to this
+tool, so `run_sources()` (`protect_tree`) and `main()` tighten them each run.
 
 ### Adding a new source
 

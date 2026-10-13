@@ -345,7 +345,9 @@ without knowing what you're exposing.
 Database files, SQLite sidecars, archive copies, and lock files use owner-only
 permissions (0600). Newly created data directories use 0700. Existing shared
 parent directories are left alone; existing application files are tightened when
-opened. Setup also makes the repository’s dedicated `data/` directory private.
+opened. Every collection also makes the archive directories (whose folder names
+are project paths) and the repository’s dedicated `data/` directory private, so
+an install from before private storage is tightened on its next run.
 Archive updates are written to a temporary file and atomically replaced, so a
 failed copy preserves the previous complete archive.
 
