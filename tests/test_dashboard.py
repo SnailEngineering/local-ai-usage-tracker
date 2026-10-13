@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -232,6 +234,24 @@ class DashboardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContentSecurityPolicyTests(unittest.TestCase):
+    def test_content_policy_hash_matches_the_actual_generated_script(self):
+        """Only the generated script may run. The policy hashes it after the
+        payload is spliced in, so a hostile value cannot shift either."""
+        for seconds in (0, 60):
+            html = dashboard.render_payload({'value': '</script><img onerror=alert(1)>__SCRIPT_HASH____REFRESH_MS__'}, seconds)
+            script = html.split('<script>', 1)[1].split('</script>', 1)[0]
+            digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+            self.assertIn("script-src 'sha256-" + digest + "'", html)
+            self.assertIn("connect-src 'self'", html)
+            self.assertIn('(${esc(lo)} → ${esc(hi)},', html)
+
+    def test_the_template_has_exactly_one_script(self):
+        """The policy allows a single hash; a second <script> would be blocked
+        silently in the browser while every Python test still passed."""
+        self.assertEqual(dashboard.TEMPLATE.count('<script'), 1)
 
 
 class BuildWriteTests(unittest.TestCase):

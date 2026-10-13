@@ -1,12 +1,10 @@
-import base64
-import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
 import collect
-from aiusage import db, dashboard
+from aiusage import db
 from aiusage.sources import claude_code_local as cc
 from tests.test_claude_code_local import _assistant
 
@@ -54,12 +52,3 @@ class StatsCacheTests(unittest.TestCase):
                 self.assertEqual(conn.execute('SELECT SUM(total_tokens) FROM coarse_daily_tokens').fetchone()[0], 12)
             finally:
                 conn.close()
-
-    def test_content_policy_hash_matches_the_actual_generated_script(self):
-        for seconds in (0, 60):
-            html = dashboard.render_payload({'value': '</script><img onerror=alert(1)>__SCRIPT_HASH____REFRESH_MS__'}, seconds)
-            script = html.split('<script>', 1)[1].split('</script>', 1)[0]
-            digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
-            self.assertIn("script-src 'sha256-" + digest + "'", html)
-            self.assertIn("connect-src 'self'", html)
-            self.assertIn('(${esc(lo)} → ${esc(hi)},', html)
