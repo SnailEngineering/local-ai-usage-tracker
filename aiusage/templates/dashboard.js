@@ -574,6 +574,7 @@ function renderMonth(app, month) {
 
 const REFRESH_MS = __REFRESH_MS__;
 const REQUEST_TIMEOUT_MS = 30000;
+const FILE_REFRESH_MIN_MS = 10 * 60 * 1000;
 let refreshing = false;
 let refreshTimer;
 let autoPaused = REFRESH_MS <= 0;
@@ -642,9 +643,13 @@ function scheduleRefresh() {
   // changing label plus a pressed state would announce the state twice.
   btn.textContent = (autoPaused ? 'Resume' : 'Pause') + ' auto-refresh';
   if (!autoPaused) {
+    // A file:// refresh is a full reload, and the file only changes when a
+    // collector runs (launchd: twice a day), so reloading every minute mostly
+    // interrupts reading to show the same numbers. Refresh is always manual.
+    const floor = location.protocol === 'file:' ? FILE_REFRESH_MIN_MS : 1000;
     refreshTimer = setInterval(() => {
       if (!document.hidden) refreshData();
-    }, Math.max(1000, REFRESH_MS || 60000));
+    }, Math.max(floor, REFRESH_MS || 60000));
   }
 }
 

@@ -149,7 +149,8 @@ server and no second query.
 
 The page ships Refresh and Auto-refresh controls. HTTP refreshes keep existing
 figures and show a persistent status message on server, network, or timeout
-errors; requests cannot overlap. Only file:// refreshes reload the page, saving
+errors; requests cannot overlap. Only file:// refreshes reload the page (automatic
+ones at most every 10 minutes, since the file changes only on collection), saving
 view state in sessionStorage when available. Pausing is remembered locally.
 Refresh preserves focus, disclosures and table scrolling; navigation focuses the
 new heading. Resize/theme changes redraw only charts. Charts support keyboard

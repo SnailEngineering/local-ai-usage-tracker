@@ -113,9 +113,10 @@ never overlap. What refresh does depends on how you opened the page:
 
 - **Plain file** (double-click, or `aiusage-dashboard`): there is no server to
   ask, so a refresh is a full page reload of whatever `./collect.py` last wrote
-  to disk — useful to pick up a launchd run without reopening the tab. Note
-  that the 60s timer reloads the tab whether or not anything changed; if you
-  keep the dashboard open while reading it, pause Auto-refresh or build it with
+  to disk — useful to pick up a launchd run without reopening the tab. The
+  page cannot tell whether the file changed, so automatic reloads here happen
+  at most every 10 minutes (the file changes only when a collector runs); click
+  Refresh after a manual `./collect.py`. Pause Auto-refresh or build with
   `./collect.py --interval 0` to start paused. File reloads preserve focus,
   disclosures, and scroll position when per-tab browser storage is available.
 - **`./collect.py --serve`**: a small local `ThreadingHTTPServer`

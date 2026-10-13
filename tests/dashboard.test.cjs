@@ -126,6 +126,11 @@ test('server errors keep figures and file refresh reloads without fetching', asy
   assert.equal(file.reloads(), 1);
 });
 
+test('file pages auto-reload at most every 10 minutes; served pages keep the interval', () => {
+  assert.equal([...browserDouble({protocol: 'file:'}).intervals.values()][0].ms, 600000);
+  assert.equal([...browserDouble().intervals.values()][0].ms, 60000);
+});
+
 test('refresh requests cannot overlap and stalled requests time out', async () => {
   const b = browserDouble({fetch: (_, {signal}) => new Promise((resolve, reject) => {
     signal.addEventListener('abort', () => reject(Object.assign(new Error(), {name: 'AbortError'})));
