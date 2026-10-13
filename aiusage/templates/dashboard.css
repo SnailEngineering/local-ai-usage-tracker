@@ -1,0 +1,173 @@
+  :root {
+    color-scheme: light;
+    --page:#f9f9f7; --surface:#fcfcfb;
+    --ink:#0b0b0b; --ink-2:#52514e; --muted:#68665f;
+    --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+    --hover:rgba(11,11,11,0.045);
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100;
+    --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+    --sother:#9b9a92;
+    --provider-anthropic:#1f62af; --provider-openai:#a84016;
+    --positive:#176b17; --negative:#b02b2b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page:#0d0d0d; --surface:#1a1a19;
+      --ink:#ffffff; --ink-2:#c3c2b7; --muted:#a5a39b;
+      --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+      --hover:rgba(255,255,255,0.055);
+      --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+      --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+      --sother:#6f6e68;
+      --provider-anthropic:#75b7ff; --provider-openai:#ff9a70;
+      --positive:#76cd81; --negative:#ff9393;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:#0d0d0d; --surface:#1a1a19;
+    --ink:#ffffff; --ink-2:#c3c2b7; --muted:#a5a39b;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --hover:rgba(255,255,255,0.055);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500;
+    --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+    --sother:#6f6e68;
+      --provider-anthropic:#75b7ff; --provider-openai:#ff9a70;
+      --positive:#76cd81; --negative:#ff9393;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin:0; padding:32px 24px 64px;
+    background:var(--page); color:var(--ink);
+    font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+  }
+  .wrap { max-width:1120px; margin:0 auto; }
+  header { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px 20px; margin-bottom:28px; }
+  h1 { font-size:22px; font-weight:640; margin:0; letter-spacing:-0.01em; }
+  .stamp { color:var(--muted); font-size:13px; margin-left:auto; }
+  .btn {
+    appearance:none; border:1px solid var(--border); background:var(--surface);
+    color:var(--ink); font:inherit; font-size:12.5px; font-weight:560;
+    padding:6px 12px; border-radius:8px; cursor:pointer;
+  }
+  .btn:hover { border-color:var(--axis); }
+  .btn:disabled { opacity:.6; cursor:default; }
+  h2 { font-size:15px; font-weight:620; margin:0 0 2px; }
+  .sub { color:var(--muted); font-size:13px; margin:0 0 16px; }
+
+  .card {
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:12px; padding:20px 22px; margin-bottom:20px;
+  }
+
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-bottom:20px; }
+  .tile { display:flex; flex-direction:column; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
+  .tile .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  .tile .v { font-size:27px; font-weight:640; margin-top:6px; letter-spacing:-0.02em; }
+  .tile .n { color:var(--ink-2); font-size:12px; margin-top:4px; }
+  .provider-footer { margin-top:auto; padding-top:14px; }
+  .provider-split { display:flex; justify-content:space-between; gap:8px;
+    border-top:1px solid var(--border); padding-top:10px; }
+  .provider-part { min-width:0; display:flex; flex-direction:column; gap:2px; }
+  .provider-part:last-child { text-align:right; }
+  .provider-name { color:var(--provider-color); font-size:11px; }
+  .provider-value { color:var(--provider-color); font-size:13px; font-weight:600;
+    font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+
+
+  .legend { display:flex; flex-wrap:wrap; gap:8px 16px; margin:14px 0 0; }
+  .legend span { display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2); }
+  .swatch { width:11px; height:11px; border-radius:3px; flex:none; }
+
+  .chart { position:relative; }
+  .chart svg { display:block; width:100%; height:auto; overflow:visible; }
+  .tick { fill:var(--muted); font-size:11px; }
+  .gridline { stroke:var(--grid); stroke-width:1; }
+  .baseline { stroke:var(--axis); stroke-width:1; }
+  .seg { stroke:var(--surface); stroke-width:2; }
+  .hit { fill:transparent; cursor:crosshair; }
+
+  .tip {
+    position:absolute; pointer-events:none; opacity:0; transition:opacity .08s;
+    background:var(--surface); border:1px solid var(--border); border-radius:9px;
+    padding:9px 11px; font-size:12.5px; min-width:150px; z-index:5;
+    box-shadow:0 6px 20px rgba(0,0,0,.14);
+  }
+  .tip .th { font-weight:640; margin-bottom:6px; }
+  .tip .tr { display:flex; align-items:center; gap:7px; white-space:nowrap; }
+  .tip .tr b { margin-left:auto; font-variant-numeric:tabular-nums; font-weight:600; }
+  .tip .tt { display:flex; gap:7px; margin-top:6px; padding-top:5px; border-top:1px solid var(--border); }
+  .tip .tt b { margin-left:auto; font-variant-numeric:tabular-nums; }
+
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; }
+  th, td { padding:9px 12px; text-align:right; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  thead th { color:var(--muted); font-weight:560; font-size:11.5px;
+             text-transform:uppercase; letter-spacing:.05em;
+             border-bottom:1px solid var(--axis); }
+  tbody tr + tr td { border-top:1px solid var(--grid); }
+  tbody td { font-variant-numeric:tabular-nums; color:var(--ink-2); }
+  tbody td:first-child { color:var(--ink); font-weight:560; }
+  tbody td.num-strong { color:var(--ink); font-weight:600; }
+  tfoot td { border-top:1px solid var(--axis); font-weight:640; color:var(--ink);
+             font-variant-numeric:tabular-nums; padding-top:11px; }
+  .models { color:var(--muted); font-size:11.5px; white-space:normal; }
+
+  /* Month rows drill into a single month. The row is the click target; the
+     month name is a real link so keyboard and middle-click work too. */
+  tbody tr.link { cursor:pointer; }
+  tbody tr.link:hover td { background:var(--hover); }
+  tbody tr.link td:first-child { position:relative; }
+  a.drill { color:inherit; text-decoration:none; }
+  a.drill:hover, tr.link:hover a.drill { text-decoration:underline; }
+  a.drill::after { content:' \203a'; color:var(--muted); font-weight:600; }
+
+  .crumbs { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:18px; }
+  .crumbs .btn { text-decoration:none; display:inline-block; }
+  .crumbs .btn[aria-disabled="true"] { opacity:.4; pointer-events:none; }
+  .crumbs h2 { font-size:17px; margin:0 4px 0 2px; letter-spacing:-0.01em; }
+  .crumbs .nav { margin-left:auto; display:flex; gap:8px; }
+  .delta.up { color:var(--negative); } .delta.down { color:var(--positive); }
+  td .swatch { display:inline-block; margin-right:7px; vertical-align:baseline; }
+
+  .note { font-size:12.5px; color:var(--ink-2); border-left:2px solid var(--s4);
+          padding:2px 0 2px 12px; margin-top:16px; }
+  .empty { color:var(--muted); padding:26px 0; text-align:center; }
+  details.runs { margin-top:8px; }
+  details.runs summary { cursor:pointer; color:var(--muted); font-size:12.5px; }
+  details.runs table { margin-top:10px; }
+  .ok { color:var(--positive); } .err { color:var(--negative); }
+
+  /* Phone width. The tile grid's 168px minimum needs 350px for two columns and
+     a 390px viewport minus the page gutters offers 342, so every tile fell into
+     one tall column and pushed the first chart several screens down. Two
+     compact columns fit; an odd tile left over spans the row instead of
+     stranding a gap. */
+  @media (max-width: 600px) {
+    body { padding:20px 16px 48px; }
+    header { margin-bottom:20px; }
+    .stamp { margin-left:0; flex-basis:100%; }
+    .card { padding:16px 14px; }
+    .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+    .tile { padding:12px 13px; }
+    .tile .k { font-size:11px; letter-spacing:.04em; }
+    .tile .v { font-size:21px; margin-top:4px; }
+    .tile .n { font-size:11.5px; }
+    .provider-value { font-size:12px; }
+    .tiles .tile:last-child:nth-child(odd) { grid-column:1 / -1; }
+  }
+
+  [hidden] { display:none !important; }
+  :focus-visible { outline:2px solid var(--provider-anthropic); outline-offset:3px; }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+  .refresh-error { border-left-color:var(--negative); margin:0 0 18px; }
+  .daily-data { margin-top:12px; font-size:13px; }
+  .daily-data summary { cursor:pointer; color:var(--ink-2); }
+  .daily-data .scroll { margin-top:10px; max-height:360px; }
+  caption { text-align:left; color:var(--ink-2); padding:8px 12px; }
+  tbody th { color:var(--ink); font-weight:560; }
+  .hit:focus-visible { outline:none; stroke:var(--provider-anthropic); stroke-width:2; }

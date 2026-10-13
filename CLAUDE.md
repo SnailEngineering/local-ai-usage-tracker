@@ -77,7 +77,11 @@ duplicates.
   (`sources/fingerprint.py`, how growing rewrites are distinguished from
   appends), and for Codex also `seq` and `context` (model and working directory).
   Codex resumes from saved context; older state without it scans prior JSON
-  records once to recover it. Rewrites discard that saved context.
+  records once to recover it. Rewrites discard that saved context. Codex also
+  saves cumulative counters and an accounting version. Repeated states are not
+  new usage; lower counters, including zero-usage reset events, start a new epoch.
+  Older accounting versions rebuild available sessions transactionally and leave
+  pruned history untouched.
   Legacy offsets/head-only hashes are
   replayed once to establish the complete fingerprint.
   Offsets are **byte** positions, so both ingesters read the files in binary —
@@ -110,6 +114,11 @@ in this tool is a computed estimate, since neither subscription is billed per to
 
 ### Dashboard (`aiusage/dashboard.py`)
 
+Editable source assets live in `aiusage/templates/dashboard.{html,css,js}`.
+`dashboard.TEMPLATE` assembles them at module load, preserving one self-contained
+output file. A CSP hashes the final inline script and blocks external assets
+and event-handler scripts. Escape imported values at every HTML sink as well.
+
 Aggregates `usage_event` in SQL, prices it, then serializes one JSON payload
 (`build_payload()`) directly into `dashboard.html` as `DATA = {...}` — no build
 step, no network needed to view it. The page is built in three separable
@@ -138,12 +147,19 @@ drill-down is pure client-side re-render: `build_payload()` ships
 the charts just filter the existing daily series, so a month view needs no
 server and no second query.
 
-The page always ships a Refresh button and a `setInterval` auto-refresh
-(`__REFRESH_MS__`, default 60s). Both call the same JS function, which tries
-`fetch('/api/data')` first and falls back to `location.reload()` if that
-fails — so the identical `dashboard.html` behaves correctly whether it's a
-plain file (fetch fails, fallback reloads whatever's on disk) or served by
-`aiusage/server.py` (fetch succeeds and re-renders in place).
+The page ships Refresh and Auto-refresh controls. HTTP refreshes keep existing
+figures and show a persistent status message on server, network, or timeout
+errors; requests cannot overlap. Only file:// refreshes reload the page, saving
+view state in sessionStorage when available. Pausing is remembered locally.
+Refresh preserves focus, disclosures and table scrolling; navigation focuses the
+new heading. Resize/theme changes redraw only charts. Charts support keyboard
+and pointer inspection and an exact daily table, populated only when opened.
+Text colors have separate contrast-tested tokens from chart fill colors.
+
+`python3 -m unittest discover -s tests` also invokes the dependency-free Node
+behavior suite when Node is installed (otherwise it reports a skip). Run it
+alone with `node --test tests/dashboard.test.cjs`. Its DOM test double validates
+behavior but is not a substitute for a real browser or screen-reader audit.
 
 ### Live serving (`aiusage/server.py`, `collect.py --serve`)
 
@@ -153,9 +169,7 @@ on every `GET /api/data`, re-runs `collect.run_sources()` and returns a fresh
 `dashboard.build_payload()` as JSON. Rendering per request is the point: the
 server used to send the `dashboard.html` written at startup, so a `--serve`
 left running for days handed every new tab that snapshot until its first poll
-replaced it. Fixing it client-side (fetching on load) is not an option — the
-page's no-answer fallback is `location.reload()`, so a `file://` open would
-reload-loop forever. `GET /` deliberately does *not* collect (the poll owns
+replaced it. `GET /` deliberately does *not* collect (the poll owns
 that) and renders in memory, so a page load cannot fail on an unwritable
 directory.
 
@@ -178,10 +192,8 @@ touched from more than one thread.
 
 Collection is throttled to at most once per `MIN_COLLECT_INTERVAL_S` (20s)
 inside that lock, so N open tabs share one collection rather than each forcing
-their own. Every branch of `do_GET` must answer: an exception escaping it closes
-the socket with no response, which the page cannot distinguish from "no server",
-and its fallback there is `location.reload()` — a failing collector would loop
-the tab. Failures return a 500 the page reports in place instead.
+their own. Every branch of `do_GET` must answer. Failures return a 500 that the page
+reports in place; network failures also preserve the last usable figures.
 
 ### Retention (`aiusage/prune.py`, `collect.py --prune`)
 

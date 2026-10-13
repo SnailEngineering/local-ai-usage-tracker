@@ -36,7 +36,9 @@ by-model and top-projects tables.
   bottom left and ChatGPT on the bottom right, including in month drill-downs.
   Cache percentages use each provider's own tokens; active days can overlap.
 - **Charts** — daily cost stacked by provider, daily tokens stacked by model.
-  Hover for a per-day breakdown. Models past the top 8 fold into "Other".
+  Hover, tap, or focus a chart and use the arrow keys for a per-day breakdown.
+  Home/End move to the first/last day. Each chart also offers a daily values
+  table with exact numbers. Models past the top 8 fold into "Other".
 - **Drill into a month** — click any row of the **By month** table. You get
   that month's own charts, a per-model table (where "Other" is itemised), and
   projects ranked within that month. The month lives in the URL as
@@ -104,22 +106,27 @@ starting an empty one beside you. Use an absolute path to put data elsewhere.
 
 ### Live updates while the tab is open
 
-`dashboard.html` always has a Refresh button and auto-refreshes on an
-interval (60s by default). What that does depends on how you opened it:
+`dashboard.html` has Refresh and Auto-refresh controls (60s by default).
+Pause or resume automatic updates in the page; the pause preference is remembered
+locally when browser storage is available. Hidden tabs do not poll, and requests
+never overlap. What refresh does depends on how you opened the page:
 
 - **Plain file** (double-click, or `aiusage-dashboard`): there is no server to
   ask, so a refresh is a full page reload of whatever `./collect.py` last wrote
   to disk — useful to pick up a launchd run without reopening the tab. Note
   that the 60s timer reloads the tab whether or not anything changed; if you
-  keep the dashboard open while reading it, build it with `./collect.py
-  --interval 0` to leave only the Refresh button.
+  keep the dashboard open while reading it, pause Auto-refresh or build it with
+  `./collect.py --interval 0` to start paused. File reloads preserve focus,
+  disclosures, and scroll position when per-tab browser storage is available.
 - **`./collect.py --serve`**: a small local `ThreadingHTTPServer`
   (`aiusage/server.py`) at `http://127.0.0.1:8787/`. Every refresh (auto or
   click) hits `GET /api/data`, which re-renders the charts in place — no full
   page reload, no separate terminal running `./collect.py` yourself. It
   re-collects at most once every 20s, so several open tabs share one
   collection instead of each triggering their own. If a collection fails, the
-  page says so and keeps the figures it already has, rather than reloading.
+  page says so and keeps the figures it already has. This also applies when
+  the server stops or a request times out after 30 seconds; Refresh retries.
+  Updates preserve focused controls, open tables, and table scroll positions.
 
 Start it in the foreground; add `--open` to launch it in your browser:
 
@@ -233,7 +240,20 @@ Stdlib `unittest`, no dependencies, no runner to install:
 python3 -m unittest discover -s tests
 ```
 
-They cover the parts where a silent regression would corrupt the numbers
+When Node.js is installed, the same command also runs the frontend behavior
+suite; otherwise that optional test is explicitly skipped. Run it directly with:
+
+```sh
+node --test tests/dashboard.test.cjs
+```
+
+The frontend tests use Node's built-in test runner and a small DOM test double,
+with no packages to install. They cover refresh/disconnect/timeout behavior,
+focus and disclosure restoration, pause persistence, keyboard/pointer chart
+inspection, exact daily tables, escaping, and text contrast. They complement,
+but do not replace, real browser and screen-reader checks.
+
+Python tests cover the parts where a silent regression would corrupt the numbers
 rather than crash: incremental re-ingest and byte-offset integrity, archive
 rewrites (shrinking, growing and same-size), malformed records, dated pricing
 windows, per-day project costing, schema migration, archive pruning, and the
@@ -295,9 +315,12 @@ aiusage/
   db.py                                 schema, upserts, run log
   pricing.py                            rate table, cost computation
   dashboard.py                          SQL -> JSON -> static HTML
+  templates/                            editable HTML, CSS, JS; embedded in output
+  storage.py                            private file/directory creation
   prune.py                              archive retention for --prune
   server.py                             optional localhost server for --serve
   sources/
+    archiving.py                        shared atomic copies and pruning fingerprints
     claude_code_local.py                archive + incremental JSONL parse
     codex_local.py                      same, for Codex rollout files
 tests/                                  stdlib unittest, see Tests above
