@@ -638,8 +638,9 @@ function showError(msg, partial = false) {
 function scheduleRefresh() {
   clearInterval(refreshTimer);
   const btn = document.getElementById('pause-btn');
-  btn.textContent = 'Auto-refresh: ' + (autoPaused ? 'paused' : 'on');
-  btn.setAttribute('aria-pressed', String(!autoPaused));
+  // The label names the action, so it carries no aria-pressed as well: a
+  // changing label plus a pressed state would announce the state twice.
+  btn.textContent = (autoPaused ? 'Resume' : 'Pause') + ' auto-refresh';
   if (!autoPaused) {
     refreshTimer = setInterval(() => {
       if (!document.hidden) refreshData();

@@ -143,9 +143,10 @@ test('refresh requests cannot overlap and stalled requests time out', async () =
 test('pause persists, resuming schedules updates, and hidden tabs do not poll', () => {
   const b = browserDouble({paused: true});
   assert.equal(b.intervals.size, 0);
-  assert.equal(b.el('pause-btn').getAttribute('aria-pressed'), 'false');
+  assert.equal(b.el('pause-btn').textContent, 'Resume auto-refresh');
   b.el('pause-btn').emit('click');
   assert.equal(b.intervals.size, 1);
+  assert.equal(b.el('pause-btn').textContent, 'Pause auto-refresh');
   b.document.hidden = true;
   [...b.intervals.values()][0].fn();
   assert.equal(b.calls(), 0);
