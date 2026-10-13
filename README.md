@@ -144,7 +144,9 @@ mkdir -p data && ./collect.py --serve > data/serve.log 2>&1 &
 auto-refresh) override the defaults. `--interval` is baked into the page when
 it is generated, so changing it means rebuilding `dashboard.html`.
 
-The server binds `127.0.0.1` only, so nothing outside your Mac can reach it.
+The server binds `127.0.0.1` only, so nothing outside your Mac can reach it,
+and it refuses any request whose `Host` is not `127.0.0.1:<port>` or
+`localhost:<port>`, so a web page cannot use DNS rebinding to read your data.
 It does not authenticate requests, though, so treat it like any other localhost
 dev server: run it while you're using it, not permanently.
 

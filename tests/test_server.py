@@ -135,6 +135,21 @@ class ServerTests(unittest.TestCase):
         base = self._serve(lambda: None)
         self._expect_error(base + "/nope", 404)
 
+    def test_a_foreign_host_header_is_refused(self) -> None:
+        """DNS rebinding: a page whose domain now resolves to 127.0.0.1 would
+        otherwise read the usage payload as same-origin."""
+        base = self._serve(lambda: 0)
+        port = base.rsplit(":", 1)[1]
+        for host in ("evil.example:" + port, "127.0.0.1:1", ""):
+            request = urllib.request.Request(base + "/api/data", headers={"Host": host})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=10)
+            caught.exception.close()
+            self.assertEqual(caught.exception.code, 403, host)
+        request = urllib.request.Request(base + "/", headers={"Host": "localhost:" + port})
+        with urllib.request.urlopen(request, timeout=10) as res:
+            self.assertEqual(res.status, 200)
+
     def test_a_page_load_is_rendered_not_the_startup_snapshot(self) -> None:
         """--serve writes dashboard.html once at startup. Serving that file
         as-is meant every browser reload, days into a session, showed the
@@ -207,7 +222,7 @@ class ServerTests(unittest.TestCase):
         would not notice a second response tacked on behind the first."""
         host, port = base.removeprefix("http://").split(":")
         with socket.create_connection((host, int(port)), timeout=10) as sock:
-            sock.sendall(f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n".encode())
+            sock.sendall(f"GET {path} HTTP/1.0\r\nHost: {host}:{port}\r\n\r\n".encode())
             chunks = []
             while True:
                 chunk = sock.recv(65536)

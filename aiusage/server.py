@@ -127,6 +127,15 @@ def make_server(
             # "no server on this port" -- so its fallback fires and reloads the
             # tab, every refresh interval, for as long as the fault lasts.
             try:
+                # Binding to 127.0.0.1 is not enough on its own: a web page can
+                # point its own domain at 127.0.0.1 (DNS rebinding) and then
+                # read /api/data as same-origin. Its requests still carry that
+                # domain in Host, so only answer the names this server prints.
+                port = self.server.server_address[1]
+                host = (self.headers.get("Host") or "").lower()
+                if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                    self.send_error(403)
+                    return
                 if self.path == "/api/data":
                     with lock:
                         refresh_error = collect_if_due()

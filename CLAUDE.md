@@ -192,7 +192,8 @@ touched from more than one thread.
 
 Collection is throttled to at most once per `MIN_COLLECT_INTERVAL_S` (20s)
 inside that lock, so N open tabs share one collection rather than each forcing
-their own. Every branch of `do_GET` must answer. Failures return a 500 that the page
+their own. `do_GET` answers 403 unless `Host` is `127.0.0.1:<port>` or
+`localhost:<port>` (DNS rebinding). Every branch of `do_GET` must answer. Failures return a 500 that the page
 reports in place; network failures also preserve the last usable figures.
 
 ### Retention (`aiusage/prune.py`, `collect.py --prune`)
