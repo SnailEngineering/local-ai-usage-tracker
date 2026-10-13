@@ -171,14 +171,22 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
 
                     info = object_value(p.get("info"), optional=True)
                     usage = object_value(info.get("last_token_usage"), optional=True)
-                    if not usage.get("total_tokens") or not rec.get("timestamp"):
+                    current = _cumulative(info)
+                    if not usage.get("total_tokens"):
+                        # Some sessions announce a reset with a zero-usage
+                        # event. Retain that lower baseline so the first turn
+                        # of the new epoch is not mistaken for an old repeat.
+                        if (current is not None and cumulative is not None
+                                and current["total_tokens"] < cumulative["total_tokens"]):
+                            cumulative = current
+                        continue
+                    if not rec.get("timestamp"):
                         continue
 
                     # Malformed usage still consumes its position, so replay
                     # and incremental reads assign the same ids to later rows.
                     seq += 1
                     row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now)
-                    current = _cumulative(info)
                     if current is not None and current == cumulative:
                         continue
                     # A reset is a different state too: accept its last delta,

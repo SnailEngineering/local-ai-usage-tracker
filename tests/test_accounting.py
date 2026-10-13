@@ -47,6 +47,14 @@ class AccountingTests(unittest.TestCase):
         self.assertEqual(self.tokens(), 184)
         self.assertEqual(self.conn.execute('SELECT COUNT(*) FROM usage_event').fetchone()[0], 5)
 
+    def test_zero_usage_reset_starts_a_new_epoch_even_when_totals_repeat(self):
+        self.append(cumulative(100, 100), cumulative(0, 0))
+        cx.ingest(self.conn, self.archive, 'now')
+        self.conn.commit()
+        self.append(cumulative(100, 100), cumulative(100, 100))
+        cx.ingest(self.conn, self.archive, 'now')
+        self.assertEqual(self.tokens(), 200)
+
     def test_upgrade_rebuilds_available_sessions_and_preserves_pruned_history(self):
         self.append(cumulative(100, 100), cumulative(100, 100))
         cx.ingest(self.conn, self.archive, 'now')

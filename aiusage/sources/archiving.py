@@ -12,6 +12,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import db
@@ -35,7 +36,13 @@ def unchanged_pruned(conn: sqlite3.Connection, path: Path, src: Path, stat) -> b
             return False
         if stat.st_mtime_ns == state["mtime_ns"]:
             return True
-        return prefix_hash(src, stat.st_size) == (state["prefix_hash"], stat.st_size)
+        if prefix_hash(src, stat.st_size) != (state["prefix_hash"], stat.st_size):
+            return False
+        # A touch did not change the content. Remember the new metadata so
+        # subsequent polls do not hash this old transcript again and again.
+        state["mtime_ns"] = stat.st_mtime_ns
+        db.set_state(conn, pruned_key(path), json.dumps(state), datetime.now(timezone.utc).isoformat())
+        return True
     except (ValueError, KeyError, TypeError):
         return False
 

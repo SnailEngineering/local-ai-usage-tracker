@@ -101,6 +101,8 @@ class StorageTests(unittest.TestCase):
                         source.run(conn, upstream, archive)
                         conn.commit()
                         self.assertFalse((archive / 's.jsonl').exists())
+                        mark = json.loads(db.get_state(conn, archiving.pruned_key(archive / 's.jsonl')))
+                        self.assertEqual(mark['mtime_ns'], original.stat().st_mtime_ns)
                         self.assertEqual(conn.execute('SELECT SUM(input_tokens) FROM usage_event').fetchone()[0], 5)
                     with original.open('a') as fh:
                         fh.write(json.dumps(_assistant(2, 7) if source is cc else codex_usage(7)) + '\n')
