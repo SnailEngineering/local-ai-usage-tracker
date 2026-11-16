@@ -97,6 +97,9 @@ Everything is optional and lives in `.env` (or the real environment, which wins)
 | `AIU_ARCHIVE_CODEX` | `./data/archive-codex` | mirrored Codex rollouts (the larger half) |
 | `AIU_CLAUDE_DIR` | `~/.claude` | where Claude Code keeps its sessions |
 | `AIU_CODEX_DIR` | `~/.codex` | where Codex keeps its sessions |
+| `AIU_XCODE_DIR` | `~/Library/Developer/Xcode/CodingAssistant` | where Xcode's Claude and Codex assistants keep sessions |
+| `AIU_XCODE_CLAUDE_DIR` / `AIU_XCODE_CODEX_DIR` | `<AIU_XCODE_DIR>/ClaudeAgentConfig` / `/codex` | override each individually |
+| `AIU_ARCHIVE_XCODE_CLAUDE` / `AIU_ARCHIVE_XCODE_CODEX` | `./data/archive-xcode-claude` / `-codex` | mirrored Xcode sessions |
 | `AIU_DASHBOARD` | `./dashboard.html` | the rendered page |
 
 Relative values are resolved against the repository, not your shell's working
@@ -202,6 +205,8 @@ reset by a reinstall — and it's what covers you for the days before you set it
 |---|---|---|---|
 | `claude_code_local` | none | Claude Code, incl. Pro/Max subscription | forward from first run (+ the current 30-day window) |
 | `codex_local` | none | Codex CLI & Desktop, incl. ChatGPT Plus | forward from first run (+ whatever Codex still holds) |
+| `claude_xcode` | none | Claude agent inside Xcode | forward from first run (+ whatever Xcode still holds) |
+| `codex_xcode` | none | Codex agent inside Xcode | forward from first run (+ whatever Xcode still holds) |
 
 Both sources are local-only, by design — no admin key, no organization, no
 network call. That also means they're the whole answer, not a fallback: they

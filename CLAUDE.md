@@ -14,7 +14,7 @@ python3 -m unittest discover -s tests   # the whole suite
 ```sh
 ./collect.py                         # run every configured source, rebuild dashboard.html
 ./collect.py --status                # print what's in the DB and the last few runs
-./collect.py --only claude_code      # run a single source (claude_code|codex)
+./collect.py --only claude_code      # run a single source (claude_code|codex|claude_xcode|codex_xcode)
 ./collect.py --no-dashboard          # collect without rebuilding dashboard.html
 ./collect.py --open                  # ...and open dashboard.html afterward
 ./collect.py --serve                 # serve on localhost, re-collecting on dashboard refresh
@@ -24,7 +24,8 @@ python3 -m unittest discover -s tests   # the whole suite
 
 `.env` (copied from `.env.example` by `setup.sh`) holds only path overrides
 (`AIU_DB`, `AIU_ARCHIVE`, `AIU_ARCHIVE_CODEX`, `AIU_CLAUDE_DIR`, `AIU_CODEX_DIR`,
-`AIU_DASHBOARD`) — no credentials are needed. Real environment variables always
+`AIU_XCODE_DIR`, `AIU_XCODE_CLAUDE_DIR`, `AIU_XCODE_CODEX_DIR`,
+`AIU_ARCHIVE_XCODE_CLAUDE`, `AIU_ARCHIVE_XCODE_CODEX`, `AIU_DASHBOARD`) — no credentials are needed. Real environment variables always
 win over `.env`. Relative values resolve against the repo root, not the caller's
 cwd (`collect._expand`), so the installed aliases behave the same from anywhere.
 
@@ -51,6 +52,19 @@ parses the *archive* copy incrementally, storing a per-file byte offset in
 `ingest_state` so a run only reads what was appended since last time. A
 partial trailing line (session still being written) is deliberately left for
 the next run.
+
+### Xcode sources
+
+Xcode's built-in Claude and Codex assistants write the same JSONL formats under
+`~/Library/Developer/Xcode/CodingAssistant/` (`ClaudeAgentConfig/projects`,
+`codex/sessions`). They reuse the two parsers through a `sources.variant.Variant`
+(`source` tag, row-id prefix, `ingest_state` key prefix): `claude_xcode`/`ccx`/`ccx_offset`
+and `codex_xcode`/`codexx`/`codexx_offset`, each with its own archive. Everything
+that must not collide across roots is namespaced by the variant, because state keys
+are relative to the archive and ids come from session/message ids. Xcode's
+`stats-cache.json` is deliberately skipped (its coarse ids are not per-root and
+would overwrite the terminal totals). Dashboard "By origin" splits on `source`.
+Sessions from claude.ai/mobile/cloud leave no local transcript and cannot be ingested.
 
 ### Idempotency
 

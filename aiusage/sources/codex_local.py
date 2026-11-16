@@ -30,10 +30,13 @@ from .. import db
 from ..storage import protect_file
 from .archiving import mirror
 from .fingerprint import prefix_hash
+from .variant import Variant
 from .validation import object_value, text_value, token_value
 
 SOURCE = "codex_local"
 PROVIDER = "openai"
+TERMINAL = Variant(SOURCE, "codex", "codex_offset")
+XCODE = Variant("codex_xcode", "codexx", "codexx_offset")
 
 # Missing versions replay available archives once, removing obsolete positional
 # rows in the same transaction. Pruned sessions are never deleted by an upgrade.
@@ -84,7 +87,8 @@ def _read_state(conn: sqlite3.Connection, key: str) -> _State:
         return _State()
 
 
-def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
+def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str,
+           variant: Variant = TERMINAL) -> dict:
     stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0,
              "bad_records": 0, "rewritten": 0}
     if not archive_dir.is_dir():
@@ -95,7 +99,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     for path in sorted(archive_dir.rglob("*.jsonl")):
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
-        state_key = f"codex_offset:{rel}"
+        state_key = f"{variant.state_prefix}:{rel}"
         saved = _read_state(conn, state_key)
         # Mutable cursors; `saved` keeps what the last run recorded.
         offset, seq, context, cumulative = saved.offset, saved.seq, saved.context, saved.cumulative
@@ -124,7 +128,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
             # delete and the replay share run_sources' transaction, so a failure
             # mid-file rolls both back rather than leaving a half-empty session.
             conn.execute("DELETE FROM usage_event WHERE source = ? AND session_id = ?",
-                         (SOURCE, session_id))
+                         (variant.source, session_id))
             offset, seq = 0, 0
             context = None
             cumulative = None
@@ -203,7 +207,8 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     # Malformed usage still consumes its position, so replay
                     # and incremental reads assign the same ids to later rows.
                     seq += 1
-                    row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now)
+                    row = _usage_row(rec, p, usage, session_id, seq, model, cwd, now,
+                                     variant)
                     if current is not None and current == cumulative:
                         continue
                     # A reset is a different state too: accept its last delta,
@@ -243,7 +248,8 @@ def _cumulative(info: dict) -> dict | None:
 
 
 def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
-               model: str, cwd: str | None, now: str) -> dict:
+               model: str, cwd: str | None, now: str,
+               variant: Variant = TERMINAL) -> dict:
     """Build one usage row from a `token_count` payload. Raises on malformed
     input; `ingest` counts that and moves on."""
     ts = text_value(rec["timestamp"])
@@ -264,8 +270,8 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
         total_in = declared
 
     return {
-        "id": f"codex:{session_id}:{seq}",
-        "source": SOURCE,
+        "id": f"{variant.id_prefix}:{session_id}:{seq}",
+        "source": variant.source,
         "provider": PROVIDER,
         "ts": ts,
         "day": _local_day(ts),
@@ -288,10 +294,11 @@ def _usage_row(rec: dict, p: dict, usage: dict, session_id: str, seq: int,
     }
 
 
-def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path) -> dict:
+def run(conn: sqlite3.Connection, codex_dir: Path, archive_dir: Path,
+        variant: Variant = TERMINAL) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     copied, total = archive(codex_dir / "sessions", archive_dir, conn)
-    stats = ingest(conn, archive_dir, now)
+    stats = ingest(conn, archive_dir, now, variant)
     stats["archived"] = copied
     stats["source_files"] = total
     return stats

@@ -376,6 +376,18 @@ function renderAll(app) {
     </table></div>
   </div>`;
 
+  if ((DATA.sources || []).length > 1) {
+    html += `<div class="card">
+      <h2>By origin</h2>
+      <p class="sub">Where each session ran: terminal tools or Xcode's built-in assistants.</p>
+      <div class="scroll"><table>
+        <thead><tr><th>Origin</th><th>Messages</th><th>Tokens</th><th>Cost</th></tr></thead>
+        <tbody>${DATA.sources.map(s => `<tr><td>${esc(s.label)}</td>
+          <td>${num(s.messages)}</td><td>${tok(s.total_tokens)}</td>
+          <td class="num-strong">${usd2(s.cost_usd)}${s.unpriced ? ' *' : ''}</td></tr>`).join('')}</tbody>
+      </table></div></div>`;
+  }
+
   if (DATA.projects.length) {
     html += `<div class="card">
       <h2>Top projects</h2>
