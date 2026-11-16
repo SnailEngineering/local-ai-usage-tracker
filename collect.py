@@ -18,6 +18,7 @@ import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -67,11 +68,20 @@ def _expand(value: str) -> Path:
     return path.resolve()
 
 
+class XcodeRoots(NamedTuple):
+    """Xcode's Claude and Codex assistants: where they write, and our archives."""
+    claude_dir: Path
+    codex_dir: Path
+    claude_archive: Path
+    codex_archive: Path
+
+
 def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
                  codex_archive_dir: Path, only: str | None = None,
-                 quiet: bool = False, triggered_by: str = "scheduled") -> int:
+                 quiet: bool = False, triggered_by: str = "scheduled",
+                 xcode: XcodeRoots | None = None) -> int:
     """Run every enabled source once, logging each to run_log. Returns the
-    number of failures; one source raising never stops the other."""
+    number of failures; one source raising never stops the others."""
     failures = 0
 
     def stage(name: str, enabled: bool, fn, archive: Path, skip_reason: str = ""):
@@ -119,6 +129,16 @@ def run_sources(conn, claude_dir: Path, codex_dir: Path, archive_dir: Path,
           lambda: codex_local.run(conn, codex_dir, codex_archive_dir), codex_archive_dir,
           "--only excluded it")
 
+    if xcode is not None:
+        stage("claude_xcode", only in (None, "claude_xcode"),
+              lambda: claude_code_local.run(conn, xcode.claude_dir, xcode.claude_archive,
+                                            claude_code_local.XCODE),
+              xcode.claude_archive, "--only excluded it")
+        stage("codex_xcode", only in (None, "codex_xcode"),
+              lambda: codex_local.run(conn, xcode.codex_dir, xcode.codex_archive,
+                                      codex_local.XCODE),
+              xcode.codex_archive, "--only excluded it")
+
     return failures
 
 
@@ -128,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--status", action="store_true", help="print a summary and exit")
     ap.add_argument("--open", dest="open_after", action="store_true",
                     help="open the dashboard, or the local server with --serve, when ready")
-    ap.add_argument("--only", choices=["claude_code", "codex"],
+    ap.add_argument("--only", choices=["claude_code", "codex", "claude_xcode", "codex_xcode"],
                     help="run a single source")
     ap.add_argument("--serve", action="store_true",
                     help="collect once, then serve the dashboard on localhost and "
@@ -162,6 +182,20 @@ def main() -> int:
         "AIU_ARCHIVE_CODEX", str(archive_dir.parent / "archive-codex")))
     claude_dir = _expand(os.environ.get("AIU_CLAUDE_DIR", "~/.claude"))
     codex_dir = _expand(os.environ.get("AIU_CODEX_DIR", "~/.codex"))
+    # Xcode's assistants keep their own config roots, so their sessions are not
+    # under ~/.claude or ~/.codex. Archives sit beside the terminal ones.
+    xcode_base = _expand(os.environ.get(
+        "AIU_XCODE_DIR", "~/Library/Developer/Xcode/CodingAssistant"))
+    xcode = XcodeRoots(
+        claude_dir=_expand(os.environ.get(
+            "AIU_XCODE_CLAUDE_DIR", str(xcode_base / "ClaudeAgentConfig"))),
+        codex_dir=_expand(os.environ.get(
+            "AIU_XCODE_CODEX_DIR", str(xcode_base / "codex"))),
+        claude_archive=_expand(os.environ.get(
+            "AIU_ARCHIVE_XCODE_CLAUDE", str(archive_dir.parent / "archive-xcode-claude"))),
+        codex_archive=_expand(os.environ.get(
+            "AIU_ARCHIVE_XCODE_CODEX", str(archive_dir.parent / "archive-xcode-codex"))),
+    )
     out_html = _expand(os.environ.get("AIU_DASHBOARD", str(ROOT / "dashboard.html")))
 
     # --serve hands the connection to a ThreadingHTTPServer, where each
@@ -178,11 +212,11 @@ def main() -> int:
         return print_status(conn, db_path)
 
     if args.prune is not None:
-        return run_prune(conn, archive_dir, codex_archive_dir, args.prune, args.yes)
+        return run_prune(conn, archive_dir, codex_archive_dir, args.prune, args.yes, xcode)
 
     print(f"local-ai-usage-tracker  db={db_path}")
     failures = run_sources(conn, claude_dir, codex_dir, archive_dir,
-                           codex_archive_dir, args.only)
+                           codex_archive_dir, args.only, xcode=xcode)
 
     from aiusage import dashboard
     if not args.no_dashboard or args.serve:
@@ -193,7 +227,7 @@ def main() -> int:
         from aiusage import server
         collect_fn = lambda: run_sources(conn, claude_dir, codex_dir, archive_dir,
                                           codex_archive_dir, args.only, quiet=True,
-                                          triggered_by="serve")
+                                          triggered_by="serve", xcode=xcode)
         httpd = server.make_server(conn, collect_fn, "127.0.0.1", args.port,
                                    refresh_seconds=args.interval,
                                    dashboard_path=out_html)
@@ -220,7 +254,8 @@ def main() -> int:
 
 
 def run_prune(conn, archive_dir: Path, codex_archive_dir: Path,
-              older_than_days: float, confirmed: bool) -> int:
+              older_than_days: float, confirmed: bool,
+              xcode: XcodeRoots | None = None) -> int:
     """List, or with --yes delete, archived files that are old and fully read.
 
     Listing is the default deliberately: this removes full session transcripts,
@@ -230,12 +265,17 @@ def run_prune(conn, archive_dir: Path, codex_archive_dir: Path,
     from aiusage import prune as pruner
 
     archives = {"claude_code_local": archive_dir, "codex_local": codex_archive_dir}
+    if xcode is not None:
+        archives["claude_xcode"] = xcode.claude_archive
+        archives["codex_xcode"] = xcode.codex_archive
     candidates = pruner.survey(conn, archives, older_than_days)
     prunable = [c for c in candidates if c.prunable]
     total = sum(c.size for c in prunable)
 
     print(f"archives : {archive_dir}")
     print(f"           {codex_archive_dir}")
+    for extra in list(archives.values())[2:]:
+        print(f"           {extra}")
     print(f"scanned  : {len(candidates)} files, "
           f"{pruner.human_bytes(sum(c.size for c in candidates))}")
 

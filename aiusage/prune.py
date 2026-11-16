@@ -38,7 +38,8 @@ from .sources.fingerprint import prefix_hash
 from .sources.archiving import pruned_key
 
 # state-key prefix -> the archive directory those keys are relative to
-STATE_PREFIXES = {"claude_code_local": "cc_offset", "codex_local": "codex_offset"}
+STATE_PREFIXES = {"claude_code_local": "cc_offset", "codex_local": "codex_offset",
+                  "claude_xcode": "ccx_offset", "codex_xcode": "codexx_offset"}
 
 
 def _offset_of(raw: str | None) -> int | None:

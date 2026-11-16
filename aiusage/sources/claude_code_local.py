@@ -21,10 +21,13 @@ from .. import db
 from ..storage import protect_file
 from .archiving import mirror
 from .fingerprint import prefix_hash
+from .variant import Variant
 from .validation import day_value, object_value, text_value, token_value
 
 SOURCE = "claude_code_local"
 PROVIDER = "anthropic"
+TERMINAL = Variant(SOURCE, "cc", "cc_offset")
+XCODE = Variant("claude_xcode", "ccx", "ccx_offset")
 
 # Placeholder model names Claude Code writes for local/no-op turns.
 SKIP_MODELS = {"<synthetic>", "", None}
@@ -42,7 +45,7 @@ def archive(projects_dir: Path, archive_dir: Path,
     return mirror(projects_dir, archive_dir, conn)
 
 
-def _usage_row(rec: dict, now: str) -> dict | None:
+def _usage_row(rec: dict, now: str, variant: Variant = TERMINAL) -> dict | None:
     msg = object_value(rec.get("message"), optional=True)
     usage = object_value(msg.get("usage"), optional=True)
     model = text_value(msg.get("model"))
@@ -75,8 +78,8 @@ def _usage_row(rec: dict, now: str) -> dict | None:
     cwd = text_value(rec.get("cwd")) or ""
 
     return {
-        "id": f"cc:{key}",
-        "source": SOURCE,
+        "id": f"{variant.id_prefix}:{key}",
+        "source": variant.source,
         "provider": PROVIDER,
         "ts": ts,
         "day": _local_day(ts),
@@ -123,7 +126,8 @@ def _read_state(conn: sqlite3.Connection, key: str) -> tuple[int, int | None, st
         return (0, None, None, 0)
 
 
-def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
+def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str,
+           variant: Variant = TERMINAL) -> dict:
     """Parse archived JSONL from the last read offset of each file."""
     stats = {"files": 0, "files_read": 0, "events": 0, "bad_lines": 0, "bad_records": 0,
              "rewritten": 0}
@@ -135,7 +139,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
     for path in sorted(archive_dir.rglob("*.jsonl")):
         stats["files"] += 1
         rel = str(path.relative_to(archive_dir))
-        state_key = f"cc_offset:{rel}"
+        state_key = f"{variant.state_prefix}:{rel}"
         offset, saved_mtime, saved_prefix, saved_prefix_len = _read_state(conn, state_key)
         protect_file(path)
         stat = path.stat()
@@ -185,7 +189,7 @@ def ingest(conn: sqlite3.Connection, archive_dir: Path, now: str) -> dict:
                     rec = object_value(rec)
                     if rec.get("type") != "assistant":
                         continue
-                    row = _usage_row(rec, now)
+                    row = _usage_row(rec, now, variant)
                 except (ValueError, TypeError, AttributeError):
                     # A structurally valid record with a malformed timestamp or
                     # token value. Skipping it costs one message; letting it
@@ -267,11 +271,16 @@ def backfill_stats_cache(conn: sqlite3.Connection, stats_cache: Path, now: str,
     return db.upsert_coarse(conn, rows)
 
 
-def run(conn: sqlite3.Connection, claude_dir: Path, archive_dir: Path) -> dict:
+def run(conn: sqlite3.Connection, claude_dir: Path, archive_dir: Path,
+        variant: Variant = TERMINAL) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     copied, total = archive(claude_dir / "projects", archive_dir, conn)
-    stats = ingest(conn, archive_dir, now)
+    stats = ingest(conn, archive_dir, now, variant)
     stats["archived"] = copied
     stats["source_files"] = total
+    if variant is not TERMINAL:
+        # Coarse ids ("ccstats:<day>:<model>") are not namespaced by root, so a
+        # second stats-cache would overwrite the first's totals. Skip it.
+        return stats
     stats["coarse_days"] = backfill_stats_cache(conn, claude_dir / "stats-cache.json", now, stats)
     return stats

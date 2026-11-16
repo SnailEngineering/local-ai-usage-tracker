@@ -32,6 +32,14 @@ DEFAULT_REFRESH_SECONDS = 60
 # third provider never repaints the first two.
 PROVIDER_SLOT = {"anthropic": 0, "openai": 1, "ollama": 2}
 
+# Where a row was recorded. Unknown sources (a future one) show their raw name.
+SOURCE_LABELS = {
+    "claude_code_local": "Claude Code (terminal)",
+    "claude_xcode": "Claude in Xcode",
+    "codex_local": "Codex (terminal)",
+    "codex_xcode": "Codex in Xcode",
+}
+
 MAX_MODEL_SERIES = 8  # past this, everything folds into "Other"
 
 
@@ -272,6 +280,22 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         for m, v in month_proj.items()
     }
 
+    # Where the usage was recorded (terminal vs Xcode). Priced per day-model
+    # row like everything else, so it reconciles with the month table.
+    by_source: dict[str, dict] = {}
+    for r in rows:
+        e = by_source.setdefault(r["source"], {
+            "source": r["source"], "label": SOURCE_LABELS.get(r["source"], r["source"]),
+            "messages": 0, "total_tokens": 0, "cost_usd": 0.0, "unpriced": False,
+        })
+        e["messages"] += r["n_events"]
+        e["total_tokens"] += r["total_tokens"]
+        if r["priced"]:
+            e["cost_usd"] += r["cost_usd"]
+        else:
+            e["unpriced"] = True
+    source_rows = sorted(by_source.values(), key=lambda x: -x["cost_usd"])
+
     # Coarse backfill: days we know were active but can no longer price.
     coarse = [
         {"day": r["day"], "tokens": r["t"]}
@@ -339,6 +363,7 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "month_models": month_model_rows,
         "month_projects": month_project_rows,
         "projects": project_rows,
+        "sources": source_rows,
         "coarse": coarse,
         "totals": totals,
         "provider_totals": _provider_summary(rows),
