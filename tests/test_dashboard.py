@@ -330,3 +330,63 @@ class BuildWriteTests(unittest.TestCase):
             self.assertIn(out.read_text(), pages)
             self.assertEqual([p.name for p in out.parent.iterdir()],
                              ["dashboard.html"], "a temp file was left behind")
+
+
+class SessionUsageTests(unittest.TestCase):
+    def _conn(self, tmp: str, rows: list[dict]):
+        conn = db.connect(Path(tmp) / "usage.db")
+        db.upsert_usage(conn, rows)
+        return conn
+
+    def _ev(self, id: str, ts: str, **over) -> dict:
+        return _event(id=id, ts=ts, day=ts[:10], input_tokens=1_000_000,
+                      output_tokens=0, **over)
+
+    def test_windows_are_five_hours_from_the_first_message_hour(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [
+                self._ev("a", "2026-08-01T10:40:00Z"),
+                self._ev("b", "2026-08-01T14:59:00Z"),   # same window (10:00-15:00)
+                self._ev("c", "2026-08-01T15:00:00Z"),   # new window
+            ])
+            now = datetime(2026, 8, 1, 16, 0, tzinfo=timezone.utc)
+            s = dashboard.session_usage(conn, now)
+            conn.close()
+        self.assertTrue(s["active"])
+        self.assertEqual(s["start"], "2026-08-01T15:00:00Z")
+        self.assertEqual(s["ends_at"], "2026-08-01T20:00:00Z")
+        self.assertEqual(s["messages"], 1)
+        self.assertEqual(s["windows"], 2)
+        # No configuration: the budget is the costliest window, here the first.
+        self.assertEqual(s["budget_source"], "peak")
+        self.assertAlmostEqual(s["budget_usd"], s["peak_usd"])
+        self.assertEqual(s["peak_start"], "2026-08-01T10:00:00Z")
+        self.assertAlmostEqual(s["peak_usd"], 2 * s["cost_usd"])
+
+    def test_an_expired_window_is_inactive_and_costs_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [self._ev("a", "2026-08-01T10:00:00Z")])
+            s = dashboard.session_usage(conn, datetime(2026, 8, 2, tzinfo=timezone.utc))
+            conn.close()
+        self.assertFalse(s["active"])
+        self.assertEqual(s["cost_usd"], 0.0)
+        self.assertIsNone(s["ends_at"])
+
+    def test_configured_budget_wins_and_bad_values_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [self._ev("a", "2026-08-01T10:00:00Z")])
+            now = datetime(2026, 8, 1, 11, tzinfo=timezone.utc)
+            with mock.patch.dict("os.environ", {dashboard.SESSION_BUDGET_ENV: "50"}):
+                s = dashboard.session_usage(conn, now)
+            self.assertEqual((s["budget_usd"], s["budget_source"]), (50.0, "config"))
+            for bad in ("abc", "-3", "0", "inf", ""):
+                with mock.patch.dict("os.environ", {dashboard.SESSION_BUDGET_ENV: bad}):
+                    self.assertEqual(dashboard.session_usage(conn, now)["budget_source"], "peak")
+            conn.close()
+
+    def test_other_providers_and_empty_databases_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._conn(tmp, [self._ev("a", "2026-08-01T10:00:00Z",
+                                             provider="openai", model="gpt-5")])
+            self.assertIsNone(dashboard.session_usage(conn))
+            conn.close()

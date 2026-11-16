@@ -42,6 +42,13 @@ SOURCE_LABELS = {
 
 MAX_MODEL_SERIES = 8  # past this, everything folds into "Other"
 
+# Claude's usage limit resets in rolling 5-hour windows. The real cap is
+# server-side and unpublished, so nothing local can report the true percentage;
+# the session bar measures the estimated cost of the current window against a
+# budget instead (see `session_usage`).
+SESSION_HOURS = 5
+SESSION_BUDGET_ENV = "AIU_SESSION_BUDGET_USD"
+
 
 def _agg(conn: sqlite3.Connection) -> list[dict]:
     """One row per (day, provider, source, model) with tokens and priced cost."""
@@ -137,6 +144,77 @@ def _provider_summary(rows) -> dict:
     for summary in summaries.values():
         summary["active_days"] = len(summary.pop("days"))
     return summaries
+
+
+def _parse_ts(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _configured_budget() -> float | None:
+    """A positive dollar figure from the environment, else None. A malformed
+    value falls back to the historical peak rather than breaking the page."""
+    try:
+        value = float(os.environ.get(SESSION_BUDGET_ENV, "").strip())
+    except ValueError:
+        return None
+    return value if value > 0 and value != float("inf") else None
+
+
+def session_usage(conn: sqlite3.Connection, now: datetime | None = None,
+                  budget: float | None = None) -> dict | None:
+    """The current 5-hour Claude window against a budget, from local data only.
+
+    Windows are rebuilt the way ccusage does: one starts at the hour containing
+    the first message after the previous window ended and lasts five hours.
+    Estimated list-price cost is the measure (raw tokens would be dominated by
+    cheap cache reads). The budget is `budget`, else $AIU_SESSION_BUDGET_USD,
+    else the costliest window on record, so it works with no configuration.
+    Returns None when there is no Anthropic usage at all.
+    """
+    now = now or datetime.now(timezone.utc)
+    if budget is None:
+        budget = _configured_budget()
+    window = timedelta(hours=SESSION_HOURS)
+
+    blocks: list[dict] = []
+    for r in conn.execute("""
+        SELECT ts, day, provider, model, input_tokens, output_tokens,
+               cache_write_5m_tokens, cache_write_1h_tokens, cache_read_tokens
+        FROM usage_event WHERE provider = 'anthropic' ORDER BY ts"""):
+        t = _parse_ts(r["ts"])
+        if not blocks or t >= blocks[-1]["end"]:
+            start = t.replace(minute=0, second=0, microsecond=0)
+            blocks.append({"start": start, "end": start + window, "cost": 0.0,
+                           "messages": 0, "unpriced": False})
+        b = blocks[-1]
+        b["messages"] += 1
+        c = pricing.cost_usd(dict(r) | {"model": pricing.normalize_model(r["model"])})
+        if c is None:
+            b["unpriced"] = True
+        else:
+            b["cost"] += c
+    if not blocks:
+        return None
+
+    peak = max(blocks, key=lambda b: b["cost"])
+    last = blocks[-1]
+    active = last["start"] <= now < last["end"]
+    current = last if active else None
+    iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "active": active,
+        "start": iso(current["start"]) if current else None,
+        "ends_at": iso(current["end"]) if current else None,
+        "cost_usd": current["cost"] if current else 0.0,
+        "messages": current["messages"] if current else 0,
+        "unpriced": bool(current and current["unpriced"]),
+        "peak_usd": peak["cost"],
+        "peak_start": iso(peak["start"]),
+        "budget_usd": budget if budget is not None else peak["cost"],
+        "budget_source": "config" if budget is not None else "peak",
+        "windows": len(blocks),
+    }
 
 
 def build_payload(conn: sqlite3.Connection) -> dict:
@@ -371,6 +449,7 @@ def build_payload(conn: sqlite3.Connection) -> dict:
         "period_providers": period_providers,
         "unpriced": {"tokens": unpriced_tokens, "models": sorted(unpriced_models)},
         "runs": runs,
+        "session": session_usage(conn),
     }
 
 

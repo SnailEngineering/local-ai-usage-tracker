@@ -62,6 +62,14 @@
     border-radius:12px; padding:20px 22px; margin-bottom:20px;
   }
 
+  .session { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:14px 18px; margin-bottom:20px; }
+  .session-head { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+  .session .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  .session-reset { color:var(--ink-2); font-size:12px; }
+  .session-bar { height:10px; border-radius:5px; background:var(--grid); overflow:hidden; margin:8px 0 6px; }
+  .session-fill { height:100%; background:var(--provider-anthropic); border-radius:5px; }
+  .session-bar.over .session-fill { background:var(--negative); }
+  .session .n { color:var(--ink-2); font-size:12px; }
   .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-bottom:20px; }
   .tile { display:flex; flex-direction:column; min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px 18px; }
   .tile .k { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
