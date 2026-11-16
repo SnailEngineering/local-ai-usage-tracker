@@ -67,7 +67,7 @@ function browserDouble(options = {}) {
   document.body = new Element('body');
   document.activeElement = document.body;
   document.body.innerHTML = '<button id="refresh-btn"></button><button id="pause-btn"></button>'
-    + '<span id="stamp"></span><div id="refresh-error"></div><p id="refresh-status"></p><main id="app"></main>';
+    + '<span id="stamp"></span><div id="refresh-error"></div><p id="refresh-status"></p><section id="session" hidden></section><main id="app"></main>';
   document.getElementById = id => document.body.querySelector('#' + id);
   let serial = 0, reloads = 0, calls = 0;
   const timeouts = new Map(), intervals = new Map(), events = {}, storage = new Map();
@@ -268,4 +268,21 @@ test('file reload restores disclosure state and focus within the tab', async () 
   const reloaded = browserDouble({protocol: 'file:', session: b.session});
   assert.equal(reloaded.el('run-log').open, false);
   assert.equal(reloaded.document.activeElement.id, 'run-log-summary');
+});
+
+test('session bar shows percent and reset, and a stale window reads as inactive', () => {
+  const soon = new Date(Date.now() + 95 * 60000).toISOString();
+  const session = {active: true, start: null, ends_at: soon, cost_usd: 5, messages: 7, unpriced: false,
+    peak_usd: 20, peak_start: soon, budget_usd: 20, budget_source: 'peak', windows: 3};
+  const live = browserDouble({data: {...payload, session}});
+  const bar = live.el('session');
+  assert.equal(bar.hidden, false);
+  assert.match(bar.innerHTML, /25% of your busiest window/);
+  assert.match(bar.innerHTML, /resets in 1h 35m/);
+  assert.equal(bar.querySelector('div').tag, 'div');
+  const stale = browserDouble({data: {...payload, session: {...session, ends_at: '2020-01-01T00:00:00Z'}}});
+  assert.match(stale.el('session').innerHTML, /no active session/);
+  assert.match(stale.el('session').innerHTML, /0% of/);
+  const none = browserDouble({data: {...payload, session: null}});
+  assert.equal(none.el('session').hidden, true);
 });

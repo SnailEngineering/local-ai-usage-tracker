@@ -255,8 +255,38 @@ function redraw() {
   restoreView(state);
 }
 
+// The 5-hour Claude window against a budget. Whether it is still active is
+// decided here from the clock, not trusted from the payload, so a page last
+// written hours ago never claims a finished window is live.
+function renderSession() {
+  const el = document.getElementById('session');
+  if (!el) return;
+  const S = DATA.session;
+  if (!S) { el.hidden = true; el.innerHTML = ''; return; }
+  const ends = S.ends_at ? Date.parse(S.ends_at) : 0;
+  const left = ends - Date.now();
+  const active = S.active && left > 0;
+  const cost = active ? S.cost_usd : 0;
+  const pct = S.budget_usd > 0 ? cost / S.budget_usd * 100 : 0;
+  const shown = Math.round(pct);
+  const mins = Math.max(0, Math.ceil(left / 60000));
+  const reset = mins >= 60 ? Math.floor(mins / 60) + 'h ' + (mins % 60) + 'm' : mins + 'm';
+  const basis = S.budget_source === 'config'
+    ? 'of your configured budget of ' + usd2(S.budget_usd)
+    : 'of your busiest window (' + usd2(S.peak_usd) + ')';
+  el.hidden = false;
+  el.innerHTML = `<div class="session-head"><span class="k">Current session</span>
+    <span class="session-reset">${active ? 'resets in ' + reset : 'no active session'}</span></div>
+    <div class="session-bar${pct > 100 ? ' over' : ''}" role="progressbar" aria-label="Current session usage"
+      aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(100, shown)}"
+      aria-valuetext="${shown}% ${esc(basis)}"><div class="session-fill" style="width:${Math.min(100, pct)}%"></div></div>
+    <div class="n">${shown}% ${esc(basis)} · ${usd2(cost)} est.${S.unpriced && active ? ' *' : ''}
+      · ${num(active ? S.messages : 0)} messages · local data only; not your plan's official limit</div>`;
+}
+
 function render() {
   rememberView();
+  renderSession();
   const nextView = routedMonth() || 'all';
   const navigating = currentView !== null && currentView !== nextView;
   currentView = nextView;

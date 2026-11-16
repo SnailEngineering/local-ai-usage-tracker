@@ -156,6 +156,15 @@ Model series beyond `MAX_MODEL_SERIES` (8) fold into "Other"; provider→color
 slot is fixed (`PROVIDER_SLOT`) so adding a third provider never repaints the
 first two.
 
+The "Current session" bar (`dashboard.session_usage`) rebuilds Claude's rolling
+5-hour windows from `usage_event` timestamps (a window starts at the hour of the
+first message after the last one ended) and measures estimated list-price cost
+against `AIU_SESSION_BUDGET_USD`, defaulting to the costliest window on record.
+The real plan limit is server-side and unreadable locally, so the bar says it is
+not the official figure. The JS decides active/expired from the clock, so a stale
+file never shows a finished window as live. There is deliberately no weekly bar:
+the weekly reset is account-specific and cannot be derived locally.
+
 Clicking a row in the "By month" table drills into that month
 (`#month=YYYY-MM` in the hash — bookmarkable, survives auto-refresh). The
 drill-down is pure client-side re-render: `build_payload()` ships
